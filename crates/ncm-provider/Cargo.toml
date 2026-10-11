@@ -1,0 +1,18 @@
+[package]
+name = "niveus-ncm-provider"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+niveus-music-core.workspace = true
+niveus-ncm-api.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true

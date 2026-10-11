@@ -1,0 +1,70 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+# 上游是 vendored 的第三方 crate，不是本项目的成员：
+# 排除掉，免得 `cargo test --workspace` 连它的测试一起跑。
+exclude = ["vendor/ncm-api-rs"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+authors = ["Niveus contributors"]
+
+[workspace.dependencies]
+# ---- internal crates ----
+niveus-music-core = { path = "crates/music-core" }
+niveus-config = { path = "crates/config" }
+niveus-ncm-api = { path = "crates/ncm-api" }
+niveus-ncm-provider = { path = "crates/ncm-provider" }
+niveus-player = { path = "crates/player" }
+niveus-lyrics = { path = "crates/lyrics" }
+niveus-artwork = { path = "crates/artwork" }
+niveus-mpris = { path = "crates/mpris" }
+niveus-ui = { path = "crates/ui" }
+niveus-app = { path = "crates/app" }
+
+# ---- upstream: NetEase API（vendored 副本，将来可换成指向自有 fork 的 git 依赖）----
+ncm-api-rs = { path = "vendor/ncm-api-rs" }
+
+# ---- external ----
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+    "signal",
+    "process",
+    "net",
+    "io-util",
+    "fs",
+] }
+tokio-util = "0.7"
+ratatui = "0.30"
+crossterm = "0.29"
+unicode-width = "0.2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "time"] }
+directories = "6"
+toml = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+image = { version = "0.25", default-features = false, features = [
+    "jpeg",
+    "png",
+    "webp",
+] }
+qrcode = { version = "0.14", default-features = false }
+# D-Bus, for the desktop integration; the tokio backend, since that is the
+# runtime the rest of the program uses.
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

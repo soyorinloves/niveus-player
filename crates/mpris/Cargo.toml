@@ -1,0 +1,18 @@
+[package]
+name = "niveus-mpris"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+niveus-music-core.workspace = true
+
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+zbus.workspace = true
+
+[dev-dependencies]
+# Only the bus tests need to drive the interface from the client side.
+futures-lite = "2"

@@ -1,0 +1,10 @@
+[package]
+name = "niveus-lyrics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+niveus-music-core.workspace = true
+thiserror.workspace = true

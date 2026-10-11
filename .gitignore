@@ -1,0 +1,30 @@
+# 构建产物（18 GB，不忽略会让 add 直接卡死）
+/target
+**/*.rs.bk
+
+# ---------------------------------------------------------------------------
+# 凭据与本地数据
+#
+# Niveus 的登录 cookie 正常写在**仓库之外**：
+#   cookie      → $XDG_STATE_HOME/niveus/cookie（即 ~/.local/state/niveus/cookie）
+#   state.json  → $XDG_STATE_HOME/niveus/state.json（收听历史等个人数据）
+#   niveus.log  → $XDG_STATE_HOME/niveus/niveus.log（可能含带 token 的 URL）
+#
+# 下面的规则是给"它们出现在树里"的情况兜底：
+#   - 用相对路径覆盖 XDG 调试，例如 XDG_STATE_HOME=. → ./niveus/cookie
+#   - 手动把凭据/状态/日志拷进来排查问题
+#
+# 按**文件名**精确忽略，不忽略整个目录——忽略目录会让"树里出现了凭据"
+# 这件事变得看不见，反而更危险。
+# ---------------------------------------------------------------------------
+cookie
+state.json
+niveus.log
+
+# 环境文件与编辑器杂物
+.env
+.env.*
+*.swp
+*~
+.DS_Store
+Thumbs.db

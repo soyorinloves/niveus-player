@@ -1,0 +1,15 @@
+[package]
+name = "niveus-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+niveus-music-core.workspace = true
+niveus-config.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+qrcode.workspace = true
+thiserror.workspace = true
+unicode-width.workspace = true

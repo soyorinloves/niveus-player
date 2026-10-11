@@ -1,0 +1,17 @@
+[package]
+name = "niveus-artwork"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+niveus-music-core.workspace = true
+image.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+reqwest.workspace = true
+
+[dev-dependencies]
+# Only the preview example needs a runtime; the library itself is async-agnostic.
+tokio.workspace = true

@@ -1,0 +1,32 @@
+[package]
+name = "niveus-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "niveus"
+path = "src/main.rs"
+
+[dependencies]
+niveus-music-core.workspace = true
+niveus-config.workspace = true
+niveus-ncm-provider.workspace = true
+niveus-player.workspace = true
+niveus-lyrics.workspace = true
+niveus-artwork.workspace = true
+niveus-mpris.workspace = true
+niveus-ui.workspace = true
+
+anyhow.workspace = true
+crossterm.workspace = true
+directories.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+ratatui.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
