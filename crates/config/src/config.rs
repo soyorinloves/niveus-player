@@ -3,23 +3,22 @@
 //! Only preferences live here. Playback mode, volume, position, queue and
 //! history are runtime state and belong to `state.json`.
 
-use crate::keymap::{Action, Key, Keymap};
+use crate::keymap::{Action, Key, Keymap, KeymapError};
 use niveus_music_core::AudioQuality;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fmt;
 use std::path::Path;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
-    #[error("无法读取配置文件: {0}")]
+    #[error("cannot read the config file: {0}")]
     Read(#[from] std::io::Error),
-    #[error("配置文件解析失败: {0}")]
+    #[error("the config file could not be parsed: {0}")]
     Parse(#[from] toml::de::Error),
-    #[error("快捷键配置无效: {0}")]
+    #[error("invalid keybinding configuration: {0}")]
     InvalidKeymap(String),
-    #[error("无法写入配置文件: {0}")]
+    #[error("cannot write the config file: {0}")]
     Write(#[source] std::io::Error),
 }
 
@@ -28,26 +27,26 @@ pub enum ConfigError {
 /// A bad file must never stop the program from starting (SPEC §25), but
 /// silently substituting the default would leave the user looking at a key
 /// that does not do what their file says, with nothing to explain why. The
-/// loader therefore carries on and reports what it ignored, so the interface
-/// can say so once the screen is up.
+/// loader therefore carries on and reports what it ignored.
+///
+/// Reported as structure, not as a sentence: the wording is the interface's,
+/// and it is kept in the interface's `strings` module so that the copy lives
+/// in one place (SPEC §39). This crate says what happened; the caller says it
+/// to the user.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConfigNotice {
-    /// A sentence for the user, in their language.
-    pub message: String,
-}
-
-impl ConfigNotice {
-    fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
-    }
-}
-
-impl fmt::Display for ConfigNotice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
-    }
+pub enum ConfigIssue {
+    /// The file exists but could not be read.
+    Unreadable { error: String },
+    /// The file is not valid TOML.
+    Unparsable { error: String },
+    /// One `[keybindings]` entry was rejected.
+    KeybindingIgnored { error: KeymapError },
+    /// `audio_quality` named a tier that does not exist.
+    UnknownQuality {
+        raw: String,
+        /// The tier that was kept instead, as it is written in the file.
+        used: &'static str,
+    },
 }
 
 /// How album art is drawn.
@@ -146,9 +145,11 @@ impl CoverSize {
 /// there is one the user has no opinion about, and the program is free to
 /// choose.
 const CONFIG_HEADER: &str = "\
-# Niveus 用户偏好。只记录与默认值不同的项，没有列出的项使用程序内置的默认值。
+# Niveus preferences. Only entries that differ from the defaults are written;
+# anything not listed here uses the program's built-in default.
 #
-# 播放模式、音量、播放位置、队列与历史属于运行状态，写在 state.json 里。
+# Playback mode, volume, position, queue and history are runtime state and live
+# in state.json.
 
 ";
 
@@ -190,7 +191,7 @@ impl Config {
     /// The configuration itself is always usable — what cannot be used is
     /// dropped and the default stands in — but the parts that were dropped are
     /// handed back so the interface can mention them (SPEC §25).
-    pub fn load(path: &Path) -> (Config, Vec<ConfigNotice>) {
+    pub fn load(path: &Path) -> (Config, Vec<ConfigIssue>) {
         match std::fs::read_to_string(path) {
             Ok(text) => Self::from_toml(&text, path),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -201,35 +202,35 @@ impl Config {
                 tracing::warn!(path = %path.display(), error = %e, "cannot read config, using defaults");
                 (
                     Config::default(),
-                    vec![ConfigNotice::new(format!(
-                        "无法读取配置文件，已使用默认设置：{e}"
-                    ))],
+                    vec![ConfigIssue::Unreadable {
+                        error: e.to_string(),
+                    }],
                 )
             }
         }
     }
 
-    fn from_toml(text: &str, path: &Path) -> (Config, Vec<ConfigNotice>) {
+    fn from_toml(text: &str, path: &Path) -> (Config, Vec<ConfigIssue>) {
         let parsed: ConfigFile = match toml::from_str(text) {
             Ok(parsed) => parsed,
             Err(e) => {
                 tracing::warn!(path = %path.display(), error = %e, "config parse failed, using defaults");
                 return (
                     Config::default(),
-                    vec![ConfigNotice::new(format!(
-                        "配置文件无法解析，已使用默认设置：{e}"
-                    ))],
+                    vec![ConfigIssue::Unparsable {
+                        error: e.to_string(),
+                    }],
                 );
             }
         };
 
         let mut config = Config::default();
-        let mut notices = Vec::new();
+        let mut issues = Vec::new();
 
         let keymap_errors = config.keymap.apply_overrides(&parsed.keybindings);
         for error in keymap_errors {
             tracing::warn!(path = %path.display(), error = %error, "ignoring keybinding entry");
-            notices.push(ConfigNotice::new(format!("快捷键配置已忽略：{error}")));
+            issues.push(ConfigIssue::KeybindingIgnored { error });
         }
 
         if let Some(raw) = parsed.audio_quality.as_deref() {
@@ -240,10 +241,10 @@ impl Config {
                         value = raw,
                         "audio_quality is not one of standard/higher/exhigh/lossless, keeping default"
                     );
-                    notices.push(ConfigNotice::new(format!(
-                        "音质「{raw}」无法识别，已使用默认音质 {}",
-                        config.audio_quality.label()
-                    )));
+                    issues.push(ConfigIssue::UnknownQuality {
+                        raw: raw.to_string(),
+                        used: config.audio_quality.label(),
+                    });
                 }
             }
         }
@@ -258,7 +259,7 @@ impl Config {
             config.cover_size = size;
         }
 
-        (config, notices)
+        (config, issues)
     }
 
     /// Writes the preferences back to `config.toml`.
@@ -391,7 +392,9 @@ quit = "x"
     #[test]
     fn what_the_loader_had_to_ignore_is_reported_rather_than_only_logged() {
         // SPEC §25: an unusable configuration is not fatal, but the user has to
-        // be able to find out why the key they wrote does nothing.
+        // be able to find out why the key they wrote does nothing. What is
+        // reported is the structure of the problem, not a sentence: the
+        // interface owns the wording (§39).
         let path = write_temp(
             "notices",
             r#"
@@ -403,32 +406,50 @@ nonsense = "z"
 next = "not-a-key"
 "#,
         );
-        let (config, notices) = Config::load(&path);
+        let (config, issues) = Config::load(&path);
 
         // Everything that could be used was used.
         assert_eq!(config.keymap.key_for(Action::Quit), Some(Key::Char('x')));
         assert_eq!(config.keymap.key_for(Action::Next), Some(Key::Char('n')));
         assert_eq!(config.audio_quality, AudioQuality::Exhigh);
 
-        assert_eq!(notices.len(), 3, "{notices:?}");
-        let text = notices
-            .iter()
-            .map(|notice| notice.message.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(text.contains("hires"), "{text}");
-        assert!(text.contains("nonsense"), "{text}");
-        assert!(text.contains("not-a-key"), "{text}");
+        assert_eq!(issues.len(), 3, "{issues:?}");
+        assert!(
+            issues.iter().any(
+                |issue| matches!(issue, ConfigIssue::UnknownQuality { raw, .. } if raw == "hires")
+            ),
+            "{issues:?}"
+        );
+        assert!(
+            issues.iter().any(|issue| matches!(
+                issue,
+                ConfigIssue::KeybindingIgnored {
+                    error: KeymapError::UnknownAction(name)
+                } if name == "nonsense"
+            )),
+            "{issues:?}"
+        );
+        assert!(
+            issues.iter().any(|issue| matches!(
+                issue,
+                ConfigIssue::KeybindingIgnored {
+                    error: KeymapError::UnknownKey(key)
+                } if key == "not-a-key"
+            )),
+            "{issues:?}"
+        );
     }
 
     #[test]
     fn an_unreadable_file_is_reported_and_defaults_are_used() {
         let path = write_temp("unreadable", "this is not = = toml ][");
-        let (config, notices) = Config::load(&path);
+        let (config, issues) = Config::load(&path);
         assert_eq!(config, Config::default());
-        assert_eq!(notices.len(), 1, "{notices:?}");
-        assert!(notices[0].message.contains("无法解析"), "{notices:?}");
-        assert_eq!(notices[0].to_string(), notices[0].message);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(
+            matches!(issues[0], ConfigIssue::Unparsable { .. }),
+            "{issues:?}"
+        );
     }
 
     #[test]
@@ -462,7 +483,10 @@ next = "not-a-key"
                 "a default was written out: {line:?}"
             );
         }
-        assert!(written.contains("只记录与默认值不同的项"), "{written}");
+        assert!(
+            written.contains("Only entries that differ from the defaults"),
+            "{written}"
+        );
 
         std::fs::remove_file(&path).unwrap();
     }
@@ -645,15 +669,15 @@ artwork_mode = "halfblock"
 color_mode = "auto"
 
 [keybindings]
-playlist = "1"
-queue = "u"
+library = "1"
+queue = "3"
 "#,
         );
         let config = Config::load_or_default(&path);
         assert_eq!(config.audio_quality, AudioQuality::Higher);
         assert_eq!(
-            config.keymap.key_for(Action::ToggleQueue),
-            Some(Key::Char('u'))
+            config.keymap.key_for(Action::ShowQueue),
+            Some(Key::Char('3'))
         );
     }
 }

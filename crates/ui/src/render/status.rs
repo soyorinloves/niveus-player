@@ -5,6 +5,7 @@
 
 use super::split_line;
 use crate::state::{ListView, UiState};
+use crate::strings;
 use crate::theme::Theme;
 use niveus_config::Action;
 use niveus_music_core::{PlaybackMode, PlaybackStatus};
@@ -85,9 +86,9 @@ fn readout_spans(state: &UiState, theme: &Theme, bitrate: Option<u32>) -> Vec<Sp
     // Paused is not stopped: a user who has just pressed the pause key needs to
     // see that what they did took effect, and "STOPPED" would say the opposite.
     let (label, style) = match status.playback {
-        PlaybackStatus::Playing => ("PLAYING", theme.accent),
-        PlaybackStatus::Paused => ("PAUSED", theme.normal),
-        PlaybackStatus::Stopped => ("STOPPED", theme.muted),
+        PlaybackStatus::Playing => (strings::status::PLAYING, theme.accent),
+        PlaybackStatus::Paused => (strings::status::PAUSED, theme.normal),
+        PlaybackStatus::Stopped => (strings::status::STOPPED, theme.muted),
     };
     push(&mut spans, Span::styled(label, style));
 
@@ -98,7 +99,7 @@ fn readout_spans(state: &UiState, theme: &Theme, bitrate: Option<u32>) -> Vec<Sp
     if let Some(bitrate) = bitrate {
         push(
             &mut spans,
-            Span::styled(format!("{bitrate} KBPS"), theme.normal),
+            Span::styled(format!("{bitrate} {}", strings::status::KBPS), theme.normal),
         );
     }
 
@@ -111,9 +112,10 @@ fn readout_spans(state: &UiState, theme: &Theme, bitrate: Option<u32>) -> Vec<Sp
         &mut spans,
         Span::styled(
             format!(
-                "QUEUE {} {}",
+                "{} {} {}",
+                strings::status::QUEUE,
                 status.queue_len,
-                state.hint(Action::ToggleQueue)
+                state.hint(Action::ShowQueue)
             ),
             theme.normal,
         ),
@@ -135,9 +137,9 @@ fn readout_spans(state: &UiState, theme: &Theme, bitrate: Option<u32>) -> Vec<Sp
             format!(
                 "{} {}",
                 if status.playback == PlaybackStatus::Playing {
-                    "PAUSE"
+                    strings::status::PAUSE
                 } else {
-                    "PLAY"
+                    strings::status::PLAY
                 },
                 state.hint(Action::PlayPause)
             ),
@@ -146,7 +148,10 @@ fn readout_spans(state: &UiState, theme: &Theme, bitrate: Option<u32>) -> Vec<Sp
     );
 
     if status.loading {
-        push(&mut spans, Span::styled("LOADING…", theme.muted));
+        push(
+            &mut spans,
+            Span::styled(strings::status::LOADING, theme.muted),
+        );
     }
 
     spans
@@ -164,7 +169,7 @@ fn kilobits(bits_per_second: u32) -> Option<u32> {
 fn volume_label(volume: u8, state: &UiState) -> String {
     let up = key_label(state, Action::VolumeUp);
     let down = key_label(state, Action::VolumeDown);
-    format!("VOL {volume}% [{down}/{up}]")
+    format!("{} {volume}% [{down}/{up}]", strings::status::VOLUME)
 }
 
 fn key_label(state: &UiState, action: Action) -> String {
@@ -181,39 +186,45 @@ fn playback_mode_label(mode: PlaybackMode) -> String {
 
 /// Short reminders of what the current view responds to.
 fn view_hints(state: &UiState, theme: &Theme) -> Vec<Span<'static>> {
+    use strings::status as text;
     let items: &[(&str, Action)] = match &state.list {
         ListView::Playlists { .. } => &[
-            ("MOVE", Action::MoveUp),
-            ("OPEN", Action::Select),
-            ("QUEUE", Action::ToggleQueue),
+            (text::FOCUS, Action::FocusNext),
+            (text::MOVE, Action::MoveUp),
+            (text::OPEN, Action::Select),
         ],
         ListView::Songs { .. } | ListView::Likes { .. } | ListView::History { .. } => &[
-            ("MOVE", Action::MoveUp),
-            ("PLAY", Action::Select),
-            ("BACK", Action::Back),
-            ("QUEUE", Action::ToggleQueue),
+            (text::FOCUS, Action::FocusNext),
+            (text::MOVE, Action::MoveUp),
+            (text::PLAY, Action::Select),
+            (text::BACK, Action::Back),
         ],
         // The queue's own operations, each with the key that performs it.
         ListView::Queue { .. } => &[
-            ("MOVE", Action::MoveUp),
-            ("PLAY", Action::Select),
-            ("ORDER", Action::ReorderUp),
-            ("DEL", Action::DeleteSong),
-            ("BACK", Action::Back),
+            (text::MOVE, Action::MoveUp),
+            (text::PLAY, Action::Select),
+            (text::ORDER, Action::ReorderUp),
+            (text::DELETE, Action::DeleteSong),
+            (text::BACK, Action::Back),
+        ],
+        // Nothing is done to a track queued to play next, only read (§17.1).
+        ListView::UpNext { .. } => &[
+            (text::FOCUS, Action::FocusNext),
+            (text::MOVE, Action::MoveUp),
         ],
         ListView::Settings { .. } => &[
-            ("MOVE", Action::MoveUp),
-            ("EDIT", Action::Select),
-            ("BACK", Action::Back),
-            ("QUIT", Action::Quit),
+            (text::MOVE, Action::MoveUp),
+            (text::EDIT, Action::Select),
+            (text::BACK, Action::Back),
+            (text::QUIT, Action::Quit),
         ],
         // Rebinding: pick a row, press Enter, then press the key to give it.
         ListView::Keybindings { .. } => &[
-            ("MOVE", Action::MoveUp),
-            ("REBIND", Action::Select),
-            ("BACK", Action::Back),
+            (text::MOVE, Action::MoveUp),
+            (text::REBIND, Action::Select),
+            (text::BACK, Action::Back),
         ],
-        ListView::Message(_) => &[("QUIT", Action::Quit)],
+        ListView::Message(_) => &[(text::QUIT, Action::Quit)],
     };
 
     let mut spans = Vec::new();
@@ -247,7 +258,8 @@ mod tests {
     use crate::layout::LayoutTier;
     use crate::render::render;
     use crate::state::{
-        ListView, LyricsView, NowPlayingView, Page, SessionView, StatusView, UiState,
+        Focus, ListView, LyricsView, NowPlayingView, Primary, Section, SessionView, StatusView,
+        UiState,
     };
     use crate::testing::line_text;
     use niveus_config::{CoverSize, Key, Keymap};
@@ -263,7 +275,9 @@ mod tests {
             name: "n".into(),
         };
         let state = UiState {
-            page: Page::Playlist,
+            primary: Primary::Library,
+            section: Section::Playlists,
+            focus: Focus::Main,
             session: SessionView::Ready { user: &user },
             list,
             now_playing: NowPlayingView {
@@ -305,7 +319,9 @@ mod tests {
             name: "n".into(),
         };
         let state = UiState {
-            page: Page::Settings,
+            primary: Primary::Settings,
+            section: Section::Playback,
+            focus: Focus::Main,
             session: SessionView::Ready { user: &user },
             list,
             now_playing: NowPlayingView {
@@ -350,7 +366,7 @@ mod tests {
                 scroll: 0,
                 capturing: true,
             },
-            Some("按下要绑定的按键，Esc 取消"),
+            Some("Press a key to bind, Esc to cancel"),
             area,
         );
 
@@ -379,7 +395,9 @@ mod tests {
             name: "n".into(),
         };
         let state = UiState {
-            page: Page::Playlist,
+            primary: Primary::Library,
+            section: Section::Playlists,
+            focus: Focus::Main,
             session: SessionView::Ready { user: &user },
             list,
             now_playing: NowPlayingView {
@@ -427,7 +445,7 @@ mod tests {
         let text = status_text(&draw(ListView::Message(""), false, None));
         assert!(text.starts_with("STOPPED"), "{text}");
         assert!(text.contains("VOL 72% [-/=]"), "{text}");
-        assert!(text.contains("QUEUE 12 [U]"), "{text}");
+        assert!(text.contains("QUEUE 12 [3]"), "{text}");
         assert!(text.contains("SEQUENTIAL [O]"), "{text}");
         assert!(text.contains("PLAY [Space]"), "{text}");
     }
@@ -462,10 +480,9 @@ mod tests {
         let text = status_text(&draw(
             ListView::Message(""),
             false,
-            Some("该歌曲暂不可播放"),
+            Some("Cannot play \"x\": gone"),
         ));
-        let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-        assert!(compact.contains("该歌曲暂不可播放"), "{text}");
+        assert!(text.contains("Cannot play"), "{text}");
         assert!(!text.contains("VOL 72%"), "{text}");
     }
 
@@ -491,13 +508,15 @@ mod tests {
     #[test]
     fn a_rebound_key_changes_the_hint() {
         let mut keymap = Keymap::default();
-        keymap.rebind(Action::ToggleQueue, Key::Char('z')).unwrap();
+        keymap.rebind(Action::ShowQueue, Key::Char('z')).unwrap();
         let user = User {
             id: UserId(1),
             name: "n".into(),
         };
         let state = UiState {
-            page: Page::Playlist,
+            primary: Primary::Library,
+            section: Section::Playlists,
+            focus: Focus::Main,
             session: SessionView::Ready { user: &user },
             list: ListView::Message(""),
             now_playing: NowPlayingView {
@@ -548,7 +567,9 @@ mod tests {
             duration_ms: None,
         }];
         let state = UiState {
-            page: Page::Playlist,
+            primary: Primary::Library,
+            section: Section::Playlists,
+            focus: Focus::Main,
             session: SessionView::Ready { user: &user },
             list: ListView::Songs {
                 playlist_name: "x",
@@ -587,7 +608,7 @@ mod tests {
 
         // The readout survives intact...
         assert!(text.contains("VOL 72%"), "{text}");
-        assert!(text.contains("QUEUE 12 [U]"), "{text}");
+        assert!(text.contains("QUEUE 12 [3]"), "{text}");
         // ...and the reminders give way rather than pushing it off the edge.
         assert!(!text.contains("BACK"), "{text}");
     }
@@ -621,7 +642,9 @@ mod tests {
             name: "n".into(),
         };
         let state = UiState {
-            page: Page::Playlist,
+            primary: Primary::Library,
+            section: Section::Playlists,
+            focus: Focus::Main,
             session: SessionView::Ready { user: &user },
             list,
             now_playing: NowPlayingView {
@@ -692,7 +715,7 @@ mod tests {
         assert_eq!(line.width(), 140);
         assert!(text.starts_with(LONG_NOTICE));
         // Reminders are whole and flush against the right edge.
-        assert!(text.contains("QUEUE [U]"), "{text:?}");
+        assert!(text.contains("PLAY [Enter]"), "{text:?}");
         assert!(text.ends_with(']'), "{text:?}");
     }
 

@@ -1,17 +1,19 @@
-//! The browsable pane.
+//! The main area.
 //!
 //! Rows are built for the visible window only, so a playlist of a thousand
 //! tracks costs the same as one of twenty.
 
 use super::{
-    empty_note, format_date, format_duration, horizontal_rule, line_of, split_line, truncate,
-    truncate_spans, CURSOR, UNKNOWN,
+    cursor_mark, cursor_style, empty_note, format_date, format_duration, horizontal_rule, line_of,
+    split_line, truncate, truncate_spans, UNKNOWN,
 };
-use crate::state::{ListView, Setting, UiState};
+use crate::state::{Focus, ListView, UiState};
+use crate::strings;
 use crate::theme::Theme;
 use niveus_config::{Action, Key};
-use niveus_music_core::{Playlist, PlaylistKind, Song};
+use niveus_music_core::{Playlist, Song};
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -21,9 +23,6 @@ const CURSOR_WIDTH: usize = 2;
 
 /// Rows a single list entry occupies in each view.
 pub(crate) const SONG_ROWS: usize = 2;
-
-/// Marks the row of the track playing now in the queue view.
-const PLAYING_MARK: &str = "正在播放";
 
 pub(crate) fn render(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme) {
     if area.width == 0 || area.height < 2 {
@@ -37,48 +36,64 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, state: &UiState, theme: &The
     ])
     .areas(area);
 
+    // The cursor is drawn in the accent colour only in the region that holds
+    // the focus, and this is that region's heading: the two together are what
+    // the user reads to know where the arrow keys will act (SPEC §10.3).
+    let focused = state.focus == Focus::Main;
     frame.render_widget(
-        Paragraph::new(title_line(state, title_area.width, theme)),
+        Paragraph::new(title_line(state, title_area.width, focused, theme)),
         title_area,
     );
     horizontal_rule(frame, rule_area, theme);
 
-    let lines = content_lines(state, content_area.width, content_area.height, theme);
+    let lines = content_lines(
+        state,
+        content_area.width,
+        content_area.height,
+        focused,
+        theme,
+    );
     frame.render_widget(Paragraph::new(lines), content_area);
 }
 
-/// The pane's heading, which also tells the user how to get back.
+/// The main area's heading, which also says how to get back where it applies.
 ///
-/// A playlist name can be any length, so the heading is shortened to the pane
+/// A playlist name can be any length, so the heading is shortened to the area
 /// like any other row.
-fn title_line(state: &UiState, width: u16, theme: &Theme) -> Line<'static> {
+fn title_line(state: &UiState, width: u16, focused: bool, theme: &Theme) -> Line<'static> {
+    let heading = if focused { theme.heading } else { theme.muted };
     let spans = match &state.list {
-        ListView::Playlists { .. } => vec![Span::styled("PLAYLISTS", theme.heading)],
+        ListView::Playlists { .. } => vec![Span::styled(strings::nav::PLAYLISTS, heading)],
         ListView::Songs { playlist_name, .. } => vec![
-            Span::styled("CURRENT PLAYLIST", theme.heading),
+            Span::styled(strings::list::CURRENT_PLAYLIST, heading),
             Span::styled(format!("  ‹ {playlist_name}"), theme.normal),
         ],
-        ListView::Likes { .. } => vec![Span::styled("FAVORITES", theme.heading)],
-        ListView::History { .. } => vec![Span::styled("HISTORY", theme.heading)],
+        ListView::Likes { .. } => vec![Span::styled(strings::nav::LIKED, heading)],
+        ListView::History { .. } => vec![Span::styled(strings::nav::HISTORY, heading)],
         // The heading carries the queue's length, which is what tells the user
         // how much is waiting.
         ListView::Queue { songs, .. } => vec![
-            Span::styled("QUEUE", theme.heading),
+            Span::styled(strings::nav::CURRENT, heading),
             Span::styled(format!("  {}", songs.len()), theme.normal),
         ],
-        ListView::Settings { .. } => vec![Span::styled("SETTINGS", theme.heading)],
-        // The same shape as a playlist's heading: where this is, and how to get
-        // back out of it.
-        ListView::Keybindings { .. } => vec![
-            Span::styled("SETTINGS", theme.heading),
-            Span::styled("  ‹ KEYBINDINGS", theme.normal),
+        ListView::UpNext { songs, .. } => vec![
+            Span::styled(strings::nav::UP_NEXT, heading),
+            Span::styled(format!("  {}", songs.len()), theme.normal),
         ],
+        ListView::Settings { group, .. } => vec![Span::styled(group.label(), heading)],
+        ListView::Keybindings { .. } => vec![Span::styled(strings::nav::KEYBINDINGS, heading)],
         ListView::Message(_) => Vec::new(),
     };
     Line::from(truncate_spans(spans, width as usize))
 }
 
-fn content_lines(state: &UiState, width: u16, height: u16, theme: &Theme) -> Vec<Line<'static>> {
+fn content_lines(
+    state: &UiState,
+    width: u16,
+    height: u16,
+    focused: bool,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
     let capacity = height as usize;
     let mut rows = Vec::with_capacity(capacity);
 
@@ -98,16 +113,28 @@ fn content_lines(state: &UiState, width: u16, height: u16, theme: &Theme) -> Vec
                 match entry(created, collected, index) {
                     Entry::Created(playlist) => {
                         if index == 0 {
-                            rows.push(line_of(PlaylistKind::Created.heading(), theme.muted));
+                            rows.push(line_of(strings::list::GROUP_CREATED, theme.muted));
                         }
-                        rows.push(playlist_line(playlist, index == *selected, width, theme));
+                        rows.push(playlist_line(
+                            playlist,
+                            index == *selected,
+                            focused,
+                            width,
+                            theme,
+                        ));
                     }
                     Entry::Collected { playlist, first } => {
                         if first {
                             rows.push(Line::default());
-                            rows.push(line_of(PlaylistKind::Collected.heading(), theme.muted));
+                            rows.push(line_of(strings::list::GROUP_COLLECTED, theme.muted));
                         }
-                        rows.push(playlist_line(playlist, index == *selected, width, theme));
+                        rows.push(playlist_line(
+                            playlist,
+                            index == *selected,
+                            focused,
+                            width,
+                            theme,
+                        ));
                     }
                 }
             }
@@ -134,6 +161,7 @@ fn content_lines(state: &UiState, width: u16, height: u16, theme: &Theme) -> Vec
                     &songs[index],
                     index,
                     index == *selected,
+                    focused,
                     width,
                     theme,
                 );
@@ -154,6 +182,7 @@ fn content_lines(state: &UiState, width: u16, height: u16, theme: &Theme) -> Vec
                     &entry.song,
                     entry.played_at,
                     index == *selected,
+                    focused,
                     width,
                     theme,
                 ));
@@ -175,19 +204,41 @@ fn content_lines(state: &UiState, width: u16, height: u16, theme: &Theme) -> Vec
                     index,
                     index == *selected,
                     *playing == Some(index),
+                    focused,
+                    width,
+                    theme,
+                ));
+            }
+        }
+        ListView::UpNext {
+            songs,
+            selected,
+            scroll,
+        } => {
+            if songs.is_empty() {
+                return placeholder(state, width, theme);
+            }
+            let end = (*scroll + capacity).min(songs.len());
+            for index in *scroll..end {
+                rows.push(up_next_line(
+                    &songs[index],
+                    index,
+                    index == *selected,
+                    focused,
                     width,
                     theme,
                 ));
             }
         }
         ListView::Settings {
+            group,
             values,
             selected,
             editing,
         } => {
-            // The rows come from the settings' own declaration, so the drawing
+            // The rows come from the group's own declaration, so the drawing
             // code holds no list of its own to fall out of step with it.
-            for (index, (setting, name)) in Setting::ALL.iter().enumerate() {
+            for (index, setting) in group.settings().iter().enumerate() {
                 let value = values.value(*setting);
                 // The row being edited brackets its value, which is the only
                 // sign that the arrows now change it rather than the cursor.
@@ -195,7 +246,14 @@ fn content_lines(state: &UiState, width: u16, height: u16, theme: &Theme) -> Vec
                     Some(editing) if editing == setting => format!("‹ {value} ›"),
                     _ => value,
                 };
-                rows.push(setting_line(name, &value, index == *selected, width, theme));
+                rows.push(setting_line(
+                    setting.label(),
+                    &value,
+                    index == *selected,
+                    focused,
+                    width,
+                    theme,
+                ));
             }
         }
         ListView::Keybindings {
@@ -211,6 +269,7 @@ fn content_lines(state: &UiState, width: u16, height: u16, theme: &Theme) -> Vec
                     state.keymap.key_for(action),
                     index == *selected,
                     *capturing && index == *selected,
+                    focused,
                     width,
                     theme,
                 ));
@@ -259,13 +318,26 @@ fn entry<'a>(created: &'a [Playlist], collected: &'a [Playlist], index: usize) -
     }
 }
 
-fn playlist_line(playlist: &Playlist, selected: bool, width: u16, theme: &Theme) -> Line<'static> {
-    let style = if selected { theme.accent } else { theme.normal };
-    let marker = if selected { CURSOR } else { " " };
-    let marker_style = if selected { theme.accent } else { theme.normal };
+/// The cursor's two cells and the style they take.
+fn cursor(selected: bool, focused: bool, theme: &Theme) -> (String, Style) {
+    (
+        format!("{} ", cursor_mark(selected, focused)),
+        cursor_style(selected, focused, theme),
+    )
+}
+
+fn playlist_line(
+    playlist: &Playlist,
+    selected: bool,
+    focused: bool,
+    width: u16,
+    theme: &Theme,
+) -> Line<'static> {
+    let style = cursor_style(selected, focused, theme);
+    let (marker, marker_style) = cursor(selected, focused, theme);
     Line::from(truncate_spans(
         vec![
-            Span::styled(format!("{marker} "), marker_style),
+            Span::styled(marker, marker_style),
             Span::styled(playlist.name.clone(), style),
         ],
         width as usize,
@@ -278,16 +350,16 @@ fn push_song_rows(
     song: &Song,
     index: usize,
     selected: bool,
+    focused: bool,
     width: u16,
     theme: &Theme,
 ) {
-    let style = if selected { theme.accent } else { theme.normal };
-    let marker = if selected { CURSOR } else { " " };
-    let marker_style = if selected { theme.accent } else { theme.normal };
+    let style = cursor_style(selected, focused, theme);
+    let (marker, marker_style) = cursor(selected, focused, theme);
 
     rows.push(Line::from(truncate_spans(
         vec![
-            Span::styled(format!("{marker} "), marker_style),
+            Span::styled(marker, marker_style),
             Span::styled(format!("{:02}  ", index + 1), theme.muted),
             Span::styled(song.title.clone(), style),
         ],
@@ -313,16 +385,16 @@ fn history_line(
     song: &Song,
     played_at: u64,
     selected: bool,
+    focused: bool,
     width: u16,
     theme: &Theme,
 ) -> Line<'static> {
-    let style = if selected { theme.accent } else { theme.normal };
-    let marker = if selected { CURSOR } else { " " };
-    let marker_style = if selected { theme.accent } else { theme.normal };
+    let style = cursor_style(selected, focused, theme);
+    let (marker, marker_style) = cursor(selected, focused, theme);
 
     split_line(
         vec![
-            Span::styled(format!("{marker} "), marker_style),
+            Span::styled(marker, marker_style),
             Span::styled(song.title.clone(), style),
             Span::styled(
                 format!("    {} · {}", song.artist_names(), song.album_name()),
@@ -343,22 +415,22 @@ fn keybinding_line(
     key: Option<Key>,
     selected: bool,
     capturing: bool,
+    focused: bool,
     width: u16,
     theme: &Theme,
 ) -> Line<'static> {
-    let marker = if selected { CURSOR } else { " " };
-    let marker_style = if selected { theme.accent } else { theme.normal };
-    let name_style = if selected { theme.accent } else { theme.normal };
+    let (marker, marker_style) = cursor(selected, focused, theme);
+    let name_style = cursor_style(selected, focused, theme);
 
     let value = match (capturing, key) {
-        (true, _) => "按下新按键…".to_string(),
+        (true, _) => strings::list::BINDING_KEY.to_string(),
         (false, Some(key)) => key.label(),
         (false, None) => UNKNOWN.to_string(),
     };
 
     split_line(
         vec![
-            Span::styled(format!("{marker} "), marker_style),
+            Span::styled(marker, marker_style),
             // The action's name as it is written in `config.toml`, so what the
             // page shows is what the file the user may hand-edit says.
             Span::styled(action.name().to_string(), name_style),
@@ -379,22 +451,22 @@ fn queue_line(
     index: usize,
     selected: bool,
     playing: bool,
+    focused: bool,
     width: u16,
     theme: &Theme,
 ) -> Line<'static> {
-    let marker = if selected { CURSOR } else { " " };
-    let marker_style = if selected { theme.accent } else { theme.normal };
-    let title_style = if selected { theme.accent } else { theme.normal };
+    let (marker, marker_style) = cursor(selected, focused, theme);
+    let title_style = cursor_style(selected, focused, theme);
 
     let right = if playing {
-        vec![Span::styled(PLAYING_MARK, theme.accent)]
+        vec![Span::styled(strings::list::PLAYING, theme.accent)]
     } else {
         Vec::new()
     };
 
     split_line(
         vec![
-            Span::styled(format!("{marker} "), marker_style),
+            Span::styled(marker, marker_style),
             Span::styled(format!("{:02}  ", index + 1), theme.muted),
             Span::styled(song.title.clone(), title_style),
         ],
@@ -403,19 +475,44 @@ fn queue_line(
     )
 }
 
+/// One row of the up-next list: its place and its title.
+///
+/// Read-only: nothing here is marked as playing, because a track queued to play
+/// next is not in the queue at all, and no operation applies to it (§17.1).
+fn up_next_line(
+    song: &Song,
+    index: usize,
+    selected: bool,
+    focused: bool,
+    width: u16,
+    theme: &Theme,
+) -> Line<'static> {
+    let (marker, marker_style) = cursor(selected, focused, theme);
+    let title_style = cursor_style(selected, focused, theme);
+
+    Line::from(truncate_spans(
+        vec![
+            Span::styled(marker, marker_style),
+            Span::styled(format!("{:02}  ", index + 1), theme.muted),
+            Span::styled(song.title.clone(), title_style),
+        ],
+        width as usize,
+    ))
+}
+
 fn setting_line(
     name: &str,
     value: &str,
     selected: bool,
+    focused: bool,
     width: u16,
     theme: &Theme,
 ) -> Line<'static> {
-    let marker = if selected { CURSOR } else { " " };
-    let marker_style = if selected { theme.accent } else { theme.normal };
-    let name_style = if selected { theme.accent } else { theme.normal };
+    let (marker, marker_style) = cursor(selected, focused, theme);
+    let name_style = cursor_style(selected, focused, theme);
     split_line(
         vec![
-            Span::styled(format!("{marker} "), marker_style),
+            Span::styled(marker, marker_style),
             Span::styled(name.to_string(), name_style),
         ],
         vec![Span::styled(value.to_string(), theme.muted)],
@@ -429,11 +526,11 @@ mod tests {
     use crate::layout::{compute, LayoutTier};
     use crate::render::render;
     use crate::state::{
-        ListView, LoginView, LyricsView, NowPlayingView, Page, SessionView, Setting,
-        SettingsValues, StatusView, UiState,
+        ListView, LoginView, LyricsView, NowPlayingView, Primary, Section, SessionView, Setting,
+        SettingGroup, SettingsValues, StatusView, UiState,
     };
     use crate::testing::{line_text, row_text, row_width};
-    use niveus_config::{Action, CoverSize, Keymap};
+    use niveus_config::{CoverSize, Keymap};
     use niveus_music_core::{
         Album, AlbumId, Artist, ArtistId, PlaybackMode, PlaybackStatus, Playlist, PlaylistId,
         PlaylistKind, Song, SongId,
@@ -442,6 +539,7 @@ mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::Terminal;
+    use std::collections::VecDeque;
 
     fn song(id: u64, title: &str) -> Song {
         Song {
@@ -474,9 +572,20 @@ mod tests {
     }
 
     fn draw_in<'a>(list: ListView<'a>, loading: bool, area: Rect) -> Buffer {
+        draw_full(list, loading, area, Focus::Main)
+    }
+
+    /// The same frame with the focus somewhere other than the main area.
+    fn draw_with_focus(list: ListView<'_>, focus: Focus) -> Buffer {
+        draw_full(list, false, Rect::new(0, 0, 120, 40), focus)
+    }
+
+    fn draw_full<'a>(list: ListView<'a>, loading: bool, area: Rect, focus: Focus) -> Buffer {
         let keymap = Keymap::default();
         let state = UiState {
-            page: Page::Playlist,
+            primary: Primary::Library,
+            section: Section::Playlists,
+            focus,
             session: SessionView::Ready {
                 user: &niveus_music_core::User {
                     id: niveus_music_core::UserId(1),
@@ -532,13 +641,14 @@ mod tests {
             .join("\n")
     }
 
-    fn list_area() -> Rect {
+    /// The main area of a Standard frame.
+    fn main_area() -> Rect {
         compute(
             Rect::new(0, 0, 120, 40),
             LayoutTier::Standard,
             CoverSize::Normal,
         )
-        .list
+        .main
     }
 
     // ---- Chinese content ---------------------------------------------------
@@ -574,6 +684,7 @@ mod tests {
             &long_chinese_song(),
             0,
             false,
+            true,
             NARROW,
             &crate::theme::Theme::default(),
         );
@@ -606,7 +717,13 @@ mod tests {
             "一个名字非常非常长的中文歌单名字用来测试截断行为是否正确",
             PlaylistKind::Created,
         );
-        let line = playlist_line(&playlist, true, NARROW, &crate::theme::Theme::default());
+        let line = playlist_line(
+            &playlist,
+            true,
+            true,
+            NARROW,
+            &crate::theme::Theme::default(),
+        );
         let text = line_text(&line);
 
         assert!(line.width() <= NARROW as usize, "{text:?}");
@@ -620,6 +737,7 @@ mod tests {
             &long_chinese_song(),
             1_700_000_000,
             false,
+            true,
             NARROW,
             &crate::theme::Theme::default(),
         );
@@ -639,6 +757,7 @@ mod tests {
             &song(1, "Sunny Day"),
             1_700_000_000,
             false,
+            true,
             NARROW,
             &crate::theme::Theme::default(),
         );
@@ -653,13 +772,13 @@ mod tests {
         let message =
             "加载歌单失败：网络请求失败，请检查网络连接后重试，如果问题持续存在请查看日志文件";
         let buffer = draw(ListView::Message(message));
-        let area = list_area();
+        let area = main_area();
 
         for y in 0..area.height {
             assert_eq!(
                 row_width(&buffer, area, y),
                 area.width as usize,
-                "row {y} does not span the pane"
+                "row {y} does not span the area"
             );
         }
         let text = row_text(&buffer, area, area.y + 2);
@@ -667,7 +786,7 @@ mod tests {
     }
 
     #[test]
-    fn a_chinese_row_still_fills_its_pane() {
+    fn a_chinese_row_still_fills_its_area() {
         let songs = vec![long_chinese_song()];
         let buffer = draw(ListView::Songs {
             playlist_name: "一个名字非常非常长的中文歌单名字用来测试标题行的截断行为是否生效",
@@ -675,13 +794,13 @@ mod tests {
             selected: 0,
             scroll: 0,
         });
-        let area = list_area();
+        let area = main_area();
 
         for y in 0..area.height {
             assert_eq!(
                 row_width(&buffer, area, y),
                 area.width as usize,
-                "row {y} does not span the pane"
+                "row {y} does not span the area"
             );
         }
         // The title row survives with its heading shortened too.
@@ -699,7 +818,7 @@ mod tests {
             selected: 0,
             scroll: 0,
         });
-        let text = text_of(&buffer, list_area());
+        let text = text_of(&buffer, main_area());
 
         assert!(text.starts_with("PLAYLISTS"), "{text}");
         assert!(text.contains("CREATED"), "{text}");
@@ -719,7 +838,7 @@ mod tests {
             selected: 1,
             scroll: 0,
         });
-        let text = text_of(&buffer, list_area());
+        let text = text_of(&buffer, main_area());
         assert!(text.contains("  Rock"), "{text}");
         assert!(text.contains("▶ Post-rock"), "{text}");
     }
@@ -733,7 +852,7 @@ mod tests {
             selected: 0,
             scroll: 0,
         });
-        let text = text_of(&buffer, list_area());
+        let text = text_of(&buffer, main_area());
 
         assert!(text.contains("CURRENT PLAYLIST  ‹ My list"), "{text}");
         assert!(text.contains("▶ 01  Sunny Day"), "{text}");
@@ -750,7 +869,7 @@ mod tests {
             selected: 0,
             scroll: 0,
         });
-        assert!(compact(&text_of(&idle, list_area())).contains("该歌单暂无歌曲"));
+        assert!(compact(&text_of(&idle, main_area())).contains("Thisplaylisthasnosongs"));
 
         // While a request is in flight the pane stays blank rather than
         // claiming the list is empty.
@@ -764,8 +883,8 @@ mod tests {
             true,
             Rect::new(0, 0, 120, 40),
         );
-        let text = compact(&text_of(&loading, list_area()));
-        assert!(!text.contains("该歌单暂无歌曲"), "{text}");
+        let text = compact(&text_of(&loading, main_area()));
+        assert!(!text.contains("Thisplaylisthasnosongs"), "{text}");
     }
 
     #[test]
@@ -777,7 +896,7 @@ mod tests {
             selected: 400,
             scroll: 400,
         });
-        let text = text_of(&buffer, list_area());
+        let text = text_of(&buffer, main_area());
 
         assert!(text.contains("Song 400"), "{text}");
         assert!(!text.contains("Song 0 "), "{text}");
@@ -793,18 +912,16 @@ mod tests {
             selected: 1,
             scroll: 0,
         });
-        let text = text_of(&buffer, list_area());
+        let text = text_of(&buffer, main_area());
 
-        assert!(text.starts_with("QUEUE  3"), "{text}");
+        assert!(text.starts_with("CURRENT  3"), "{text}");
         assert!(text.contains("01  Song A"), "{text}");
         assert!(text.contains("02  Song B"), "{text}");
         // The cursor and the track playing are marked separately: the user can
         // browse the queue while another track plays.
         assert!(text.contains("▶ 02  Song B"), "{text}");
         assert!(text.contains("  01  Song A"), "{text}");
-        // Read through `compact`: the cell a wide glyph covers reads back as a
-        // space, so the mark arrives with gaps between its characters.
-        assert!(compact(&text).contains("正在播放"), "{text}");
+        assert!(text.contains("PLAYING"), "{text}");
     }
 
     #[test]
@@ -818,7 +935,7 @@ mod tests {
             selected: 0,
             scroll: 0,
         });
-        assert!(!text_of(&buffer, list_area()).contains("正在播放"));
+        assert!(!text_of(&buffer, main_area()).contains("PLAYING"));
     }
 
     #[test]
@@ -838,17 +955,17 @@ mod tests {
             selected: 0,
             scroll: 0,
         });
-        let area = list_area();
+        let area = main_area();
 
         for y in 0..area.height {
             assert_eq!(
                 row_width(&buffer, area, y),
                 area.width as usize,
-                "row {y} does not span the pane"
+                "row {y} does not span the area"
             );
         }
         let row = row_text(&buffer, area, area.y + 2);
-        assert!(row.ends_with("正在播放"), "{row:?}");
+        assert!(row.ends_with("PLAYING"), "{row:?}");
         assert!(row.contains('…'), "{row:?}");
     }
 
@@ -861,65 +978,68 @@ mod tests {
             selected: 0,
             scroll: 0,
         });
-        assert!(compact(&text_of(&buffer, list_area())).contains("队列为空"));
+        assert!(compact(&text_of(&buffer, main_area())).contains("Thequeueisempty"));
+    }
+
+    #[test]
+    fn the_up_next_list_shows_what_is_queued_and_marks_nothing_as_playing() {
+        let mut songs: VecDeque<Song> = VecDeque::new();
+        songs.push_back(song(1, "Song X"));
+        songs.push_back(song(2, "Song Y"));
+        let buffer = draw(ListView::UpNext {
+            songs: &songs,
+            selected: 1,
+            scroll: 0,
+        });
+        let text = text_of(&buffer, main_area());
+
+        assert!(text.starts_with("UP NEXT  2"), "{text}");
+        assert!(text.contains("01  Song X"), "{text}");
+        assert!(text.contains("▶ 02  Song Y"), "{text}");
+        // Nothing here plays: these are not the queue's own items.
+        assert!(!text.contains("PLAYING"), "{text}");
+    }
+
+    #[test]
+    fn an_empty_up_next_list_says_so() {
+        let songs: VecDeque<Song> = VecDeque::new();
+        let buffer = draw(ListView::UpNext {
+            songs: &songs,
+            selected: 0,
+            scroll: 0,
+        });
+        assert!(compact(&text_of(&buffer, main_area())).contains("Nothingisqueuedtoplaynext"));
+    }
+
+    #[test]
+    fn the_cursor_is_drawn_only_while_the_main_area_holds_the_focus() {
+        // One cursor, in the focused region only: Tab moves it, and the region
+        // it leaves keeps its selection as a dimmed label (SPEC §10.3).
+        let songs = vec![song(1, "Sunny Day")];
+        let list = || ListView::Songs {
+            playlist_name: "My list",
+            songs: &songs,
+            selected: 0,
+            scroll: 0,
+        };
+        let area = main_area();
+        let row = area.y + 2;
+        let accent = crate::theme::Theme::default().accent.fg.unwrap();
+
+        let focused = draw_with_focus(list(), Focus::Main);
+        let cell = focused.cell((area.x, row)).unwrap();
+        assert_eq!(cell.symbol(), "▶");
+        assert_eq!(cell.fg, accent, "the focused cursor is not the accent");
+
+        let unfocused = draw_with_focus(list(), Focus::Secondary);
+        let cell = unfocused.cell((area.x, row)).unwrap();
+        assert_eq!(cell.symbol(), " ", "the cursor stayed in an unfocused area");
     }
 
     #[test]
     fn settings_show_their_current_values() {
         let buffer = draw(ListView::Settings {
-            values: SettingsValues {
-                quality: "exhigh",
-                mode: "Sequential",
-                volume: 72,
-                cover_size: "normal",
-            },
-            selected: 1,
-            editing: None,
-        });
-        let text = text_of(&buffer, list_area());
-
-        assert!(text.contains("KEYBINDINGS"), "{text}");
-        assert!(text.contains("AUDIO QUALITY"), "{text}");
-        assert!(text.contains("exhigh"), "{text}");
-        assert!(text.contains("Sequential"), "{text}");
-        assert!(text.contains("72%"), "{text}");
-        assert!(text.contains("▶ AUDIO QUALITY"), "{text}");
-    }
-
-    #[test]
-    fn the_row_being_edited_says_so() {
-        // The arrows change a value only while its row is being edited, and
-        // nothing else on screen says which row that is.
-        let values = |editing| ListView::Settings {
-            values: SettingsValues {
-                quality: "exhigh",
-                mode: "Sequential",
-                volume: 72,
-                cover_size: "normal",
-            },
-            selected: 4,
-            editing,
-        };
-
-        let text = text_of(&draw(values(None)), list_area());
-        assert!(text.contains("normal"), "{text}");
-        assert!(
-            !text.contains("‹ normal ›"),
-            "an unedited row is bracketed: {text}"
-        );
-
-        let text = text_of(&draw(values(Some(Setting::CoverSize))), list_area());
-        assert!(text.contains("‹ normal ›"), "{text}");
-
-        // And only that row, not the whole page.
-        assert!(!text.contains("‹ exhigh ›"), "{text}");
-    }
-
-    #[test]
-    fn every_setting_the_model_declares_is_drawn() {
-        // The page is built from the settings' own list, so this is what keeps
-        // the declaration and the drawing together.
-        let buffer = draw(ListView::Settings {
+            group: SettingGroup::Playback,
             values: SettingsValues {
                 quality: "exhigh",
                 mode: "Sequential",
@@ -929,9 +1049,89 @@ mod tests {
             selected: 0,
             editing: None,
         });
-        let text = text_of(&buffer, list_area());
-        for (_, label) in Setting::ALL {
-            assert!(text.contains(label), "{label} is missing from the page");
+        let text = text_of(&buffer, main_area());
+
+        assert!(text.starts_with("PLAYBACK"), "{text}");
+        assert!(text.contains("AUDIO QUALITY"), "{text}");
+        assert!(text.contains("exhigh"), "{text}");
+        assert!(text.contains("Sequential"), "{text}");
+        assert!(text.contains("72%"), "{text}");
+        assert!(text.contains("▶ AUDIO QUALITY"), "{text}");
+        // The cover size belongs to the other group, so it is not here.
+        assert!(!text.contains("COVER SIZE"), "{text}");
+    }
+
+    #[test]
+    fn the_appearance_group_lists_only_the_cover_size() {
+        let buffer = draw(ListView::Settings {
+            group: SettingGroup::Appearance,
+            values: SettingsValues {
+                quality: "exhigh",
+                mode: "Sequential",
+                volume: 72,
+                cover_size: "normal",
+            },
+            selected: 0,
+            editing: None,
+        });
+        let text = text_of(&buffer, main_area());
+        assert!(text.starts_with("APPEARANCE"), "{text}");
+        assert!(text.contains("COVER SIZE"), "{text}");
+        assert!(text.contains("normal"), "{text}");
+        assert!(!text.contains("AUDIO QUALITY"), "{text}");
+    }
+
+    #[test]
+    fn the_row_being_edited_says_so() {
+        // The arrows change a value only while its row is being edited, and
+        // nothing else on screen says which row that is.
+        let values = |editing| ListView::Settings {
+            group: SettingGroup::Appearance,
+            values: SettingsValues {
+                quality: "exhigh",
+                mode: "Sequential",
+                volume: 72,
+                cover_size: "normal",
+            },
+            selected: 0,
+            editing,
+        };
+
+        let text = text_of(&draw(values(None)), main_area());
+        assert!(text.contains("normal"), "{text}");
+        assert!(
+            !text.contains("‹ normal ›"),
+            "an unedited row is bracketed: {text}"
+        );
+
+        let text = text_of(&draw(values(Some(Setting::CoverSize))), main_area());
+        assert!(text.contains("‹ normal ›"), "{text}");
+    }
+
+    #[test]
+    fn every_setting_the_model_declares_is_drawn_in_its_group() {
+        // The pages are built from the settings' own declaration, so this is
+        // what keeps the declaration and the drawing together.
+        for group in SettingGroup::ALL {
+            let buffer = draw(ListView::Settings {
+                group,
+                values: SettingsValues {
+                    quality: "exhigh",
+                    mode: "Sequential",
+                    volume: 72,
+                    cover_size: "normal",
+                },
+                selected: 0,
+                editing: None,
+            });
+            let text = text_of(&buffer, main_area());
+            for setting in group.settings() {
+                assert!(
+                    text.contains(setting.label()),
+                    "{} is missing from {group:?}",
+                    setting.label()
+                );
+            }
         }
     }
 
@@ -942,11 +1142,9 @@ mod tests {
             scroll: 0,
             capturing: false,
         });
-        let text = text_of(&buffer, list_area());
+        let text = text_of(&buffer, main_area());
 
-        // The heading says where this is and how to leave it.
-        assert!(text.contains("SETTINGS"), "{text}");
-        assert!(text.contains("KEYBINDINGS"), "{text}");
+        assert!(text.starts_with("KEYBINDINGS"), "{text}");
 
         // Every action is listed with the key the keymap holds for it, so the
         // page cannot show a binding that would not fire.
@@ -963,12 +1161,12 @@ mod tests {
 
     #[test]
     fn the_selected_keybinding_is_drawn_even_when_the_pane_is_short() {
-        // There are 23 actions and the pane is 18 rows of list at the Minimal
-        // tier, so the cursor has to be scrolled into view like any other list.
-        // Left unscrolled, the highlight walks off the bottom of the pane and
-        // takes the "waiting for a key" prompt with it — the user would then
-        // rebind a row they cannot see.
-        let area = Rect::new(0, 0, 80, 24);
+        // There are more actions than the shortest pane can show, so the cursor
+        // has to be scrolled into view like any other list. Left unscrolled,
+        // the highlight walks off the bottom of the pane and takes the "waiting
+        // for a key" prompt with it — the user would then rebind a row they
+        // cannot see.
+        let area = Rect::new(0, 0, 90, 24);
         let last = Action::ALL.len() - 1;
         let scroll = last - 5;
         let buffer = draw_in(
@@ -981,15 +1179,16 @@ mod tests {
             area,
         );
 
-        let rows: Vec<String> = (area.y..area.y + area.height)
-            .map(|y| row_text(&buffer, area, y))
+        let main = compute(area, LayoutTier::Minimal, CoverSize::Normal).main;
+        let rows: Vec<String> = (main.y..main.y + main.height)
+            .map(|y| row_text(&buffer, main, y))
             .collect();
         let cursor_row = rows
             .iter()
-            .find(|row| row.contains(CURSOR))
+            .find(|row| row.contains(crate::render::CURSOR))
             .unwrap_or_else(|| panic!("the cursor is not on screen: {rows:#?}"));
         assert!(
-            cursor_row.contains("按下新按键"),
+            cursor_row.contains("Press a new key"),
             "the row being rebound is drawn without saying so: {cursor_row:?}"
         );
         // The action it belongs to is there with it.
@@ -1006,7 +1205,7 @@ mod tests {
 
     #[test]
     fn a_row_waiting_for_a_key_says_so_instead_of_its_old_one() {
-        let area = list_area();
+        let area = main_area();
         let buffer = draw(ListView::Keybindings {
             selected: 0,
             scroll: 0,
@@ -1016,12 +1215,12 @@ mod tests {
         // The selected row is the first entry, which is two rows below the
         // heading and its rule.
         let selected_row = row_text(&buffer, area, area.y + 2);
-        assert!(selected_row.contains("按下新按键"), "{selected_row:?}");
+        assert!(selected_row.contains("Press a new key"), "{selected_row:?}");
         // Its own key is replaced rather than shown beside the prompt, which
         // would read as though it were still bound.
         assert!(!selected_row.trim_end().ends_with("1"), "{selected_row:?}");
         let prompts: usize = (area.y..area.y + area.height)
-            .filter(|y| row_text(&buffer, area, *y).contains("按下新按键"))
+            .filter(|y| row_text(&buffer, area, *y).contains("Press a new key"))
             .count();
         assert_eq!(prompts, 1, "more than the row being rebound is waiting");
     }
@@ -1032,7 +1231,7 @@ mod tests {
         // where every other message this program has for the user goes: a list
         // can be longer than the pane, and an explanation at the bottom of one
         // would be the first thing scrolled out of sight.
-        let area = list_area();
+        let area = main_area();
         let buffer = draw(ListView::Keybindings {
             selected: 3,
             scroll: 0,
@@ -1042,9 +1241,9 @@ mod tests {
             .map(|y| row_width(&buffer, area, y))
             .max()
             .unwrap();
-        assert!(longest <= area.width as usize, "a row overhangs the pane");
+        assert!(longest <= area.width as usize, "a row overhangs the area");
         // Nothing about conflicts belongs in the list itself.
-        assert!(!text_of(&buffer, area).contains("冲突"));
+        assert!(!text_of(&buffer, area).contains("bound"));
     }
 
     #[test]
@@ -1056,8 +1255,8 @@ mod tests {
             selected: 0,
             scroll: 0,
         });
-        let area = list_area();
-        let rule_row: String = (0..area.width)
+        let area = main_area();
+        let rule_row: String = (area.x..area.x + area.width)
             .map(|x| buffer.cell((x, area.y + 1)).unwrap().symbol())
             .collect();
         assert!(rule_row.starts_with("─────"), "{rule_row}");
@@ -1067,7 +1266,7 @@ mod tests {
     #[test]
     fn a_message_list_renders_the_message() {
         let buffer = draw(ListView::Message("加载失败: 网络错误"));
-        assert!(compact(&text_of(&buffer, list_area())).contains("加载失败:网络错误"));
+        assert!(compact(&text_of(&buffer, main_area())).contains("加载失败:网络错误"));
     }
 
     #[test]
@@ -1078,7 +1277,7 @@ mod tests {
             selected: 0,
             scroll: 0,
         });
-        assert!(text_of(&buffer, list_area()).contains("PLAYLISTS"));
+        assert!(text_of(&buffer, main_area()).contains("PLAYLISTS"));
     }
 
     #[test]
@@ -1087,7 +1286,9 @@ mod tests {
         let grid = crate::qr::encode("https://example.invalid/x").unwrap();
         let keymap = Keymap::default();
         let state = UiState {
-            page: Page::Playlist,
+            primary: Primary::Library,
+            section: Section::Playlists,
+            focus: Focus::Main,
             session: SessionView::Login(LoginView::Waiting {
                 grid: &grid,
                 scanned: false,
@@ -1121,8 +1322,8 @@ mod tests {
             .unwrap();
         let text = compact(&text_of(terminal.backend().buffer(), area));
 
-        assert!(text.contains("扫码登录"), "{text}");
+        assert!(text.contains("SIGNIN"), "{text}");
         // The navigation row is gone: sign-in owns the screen.
-        assert!(!text.contains("PLAYLIST ["), "{text}");
+        assert!(!text.contains("LIBRARY["), "{text}");
     }
 }

@@ -20,7 +20,7 @@ const ERROR_CORRECTION: EcLevel = EcLevel::L;
 
 #[derive(Debug, Error)]
 pub enum QrError {
-    #[error("无法生成二维码: {0}")]
+    #[error("cannot render the QR code: {0}")]
     Encode(#[from] qrcode::types::QrError),
 }
 

@@ -12,9 +12,9 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum PathError {
-    #[error("无法确定配置/状态目录：请设置 XDG_CONFIG_HOME / XDG_STATE_HOME，或设置 HOME")]
+    #[error("cannot determine the config/state directories: set HOME or XDG_CONFIG_HOME / XDG_STATE_HOME")]
     NoHome,
-    #[error("无法创建目录 {path}: {source}")]
+    #[error("cannot create the directory {path}: {source}")]
     Create {
         path: PathBuf,
         source: std::io::Error,

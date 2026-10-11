@@ -61,7 +61,7 @@ impl Player {
 
         if socket.as_os_str().len() > MAX_SOCKET_PATH {
             return Err(PlayerError::IpcProtocol(format!(
-                "运行时目录路径过长，无法建立播放器通道：{}",
+                "the runtime directory path is too long to create the player channel: {}",
                 socket.display()
             )));
         }
@@ -285,7 +285,7 @@ async fn connect_within(socket: &Path, child: &mut Child) -> Result<UnixStream, 
                 // retrying for the full timeout would just delay the report.
                 if let Ok(Some(status)) = child.try_wait() {
                     return Err(PlayerError::IpcConnection(std::io::Error::other(format!(
-                        "播放器进程已退出（{status}）"
+                        "the player process exited ({status})"
                     ))));
                 }
                 if !matches!(
@@ -301,7 +301,7 @@ async fn connect_within(socket: &Path, child: &mut Child) -> Result<UnixStream, 
 
     Err(PlayerError::IpcConnection(std::io::Error::new(
         std::io::ErrorKind::TimedOut,
-        "播放器未在超时内启动",
+        "the player did not start within the timeout",
     )))
 }
 

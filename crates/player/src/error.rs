@@ -6,16 +6,16 @@
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlayerError {
-    #[error("未找到 mpv：播放需要 mpv，请用你的发行版包管理器安装")]
+    #[error("mpv was not found; playback needs mpv, so install it with your distribution's package manager")]
     MpvNotFound,
-    #[error("无法启动播放器：{0}")]
+    #[error("cannot start the player: {0}")]
     Spawn(#[source] std::io::Error),
-    #[error("无法连接播放器：{0}")]
+    #[error("cannot connect to the player: {0}")]
     IpcConnection(#[source] std::io::Error),
-    #[error("播放器通信失败：{0}")]
+    #[error("player communication failed: {0}")]
     IpcProtocol(String),
-    #[error("播放器拒绝执行该操作：{0}")]
+    #[error("the player refused the command: {0}")]
     Rejected(String),
-    #[error("播放器已关闭")]
+    #[error("the player has exited")]
     Closed,
 }

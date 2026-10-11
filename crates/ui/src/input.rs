@@ -62,7 +62,15 @@ mod tests {
         let keymap = Keymap::default();
         assert_eq!(
             map_key(press(KeyCode::Char('1')), &keymap),
-            Some(Action::ShowPlaylist)
+            Some(Action::ShowLibrary)
+        );
+        assert_eq!(
+            map_key(press(KeyCode::Char('3')), &keymap),
+            Some(Action::ShowQueue)
+        );
+        assert_eq!(
+            map_key(press(KeyCode::Tab), &keymap),
+            Some(Action::FocusNext)
         );
         assert_eq!(
             map_key(press(KeyCode::Char(' ')), &keymap),

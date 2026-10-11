@@ -11,12 +11,14 @@ use niveus_music_core::{
     AudioSource, PlaybackMode, PlaybackStatus, PlayedSong, Playlist, Song, User,
 };
 use ratatui::layout::Rect;
+use std::collections::VecDeque;
 
-/// Where each setting sits in that list, so the app knows which one the cursor
-/// is on without counting the drawing code.
+/// One of the settings a page can change.
+///
+/// Keybindings are not here: they are a list rather than a value, and a
+/// secondary item of their own (SPEC §10.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Setting {
-    Keybindings,
     AudioQuality,
     PlaybackMode,
     Volume,
@@ -24,23 +26,19 @@ pub enum Setting {
 }
 
 impl Setting {
-    /// Every setting, in the order the page lists it, with the name it is
+    /// Every setting, in the order the pages list them, with the name each is
     /// shown under.
     ///
-    /// One declaration on purpose: the order, the heading and the number of
-    /// rows are all read from here, so adding a setting is one line rather
-    /// than a hunt through the renderer and the app for the places that used
-    /// to count them (SPEC §35, Phase 10).
-    pub const ALL: [(Setting, &'static str); 5] = [
-        (Setting::Keybindings, "KEYBINDINGS"),
+    /// One declaration on purpose: the heading and the label are both read
+    /// from here, so adding a setting is one line rather than a hunt through
+    /// the renderer and the app for the places that used to count them
+    /// (SPEC §35, Phase 10).
+    pub const ALL: [(Setting, &'static str); 4] = [
         (Setting::AudioQuality, "AUDIO QUALITY"),
         (Setting::PlaybackMode, "PLAYBACK MODE"),
         (Setting::Volume, "VOLUME"),
         (Setting::CoverSize, "COVER SIZE"),
     ];
-
-    /// How many settings the page lists.
-    pub const COUNT: usize = Self::ALL.len();
 
     /// The name a setting is listed under.
     pub fn label(self) -> &'static str {
@@ -50,25 +48,61 @@ impl Setting {
             .expect("ALL lists every setting")
             .1
     }
+}
 
-    /// The setting at a position in the list.
-    pub fn at(index: usize) -> Option<Setting> {
-        Self::ALL.get(index).map(|(setting, _)| *setting)
+/// How the settings are grouped in the secondary column (SPEC §10.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingGroup {
+    Playback,
+    Appearance,
+}
+
+impl SettingGroup {
+    /// Every group, in the order SETTINGS lists them.
+    pub const ALL: [SettingGroup; 2] = [SettingGroup::Playback, SettingGroup::Appearance];
+
+    /// The settings this group lists, in the order it lists them.
+    pub fn settings(self) -> &'static [Setting] {
+        match self {
+            SettingGroup::Playback => &[
+                Setting::AudioQuality,
+                Setting::PlaybackMode,
+                Setting::Volume,
+            ],
+            SettingGroup::Appearance => &[Setting::CoverSize],
+        }
     }
 
-    /// Where a setting sits in the list.
-    pub fn index_of(setting: Setting) -> usize {
-        Self::ALL
-            .iter()
-            .position(|(candidate, _)| *candidate == setting)
-            .expect("ALL lists every setting")
+    /// How many settings the group lists.
+    pub fn count(self) -> usize {
+        self.settings().len()
+    }
+
+    /// The setting at a position in this group's list.
+    pub fn at(self, index: usize) -> Option<Setting> {
+        self.settings().get(index).copied()
+    }
+
+    /// The group a setting belongs to.
+    pub fn of(setting: Setting) -> SettingGroup {
+        match setting {
+            Setting::CoverSize => SettingGroup::Appearance,
+            Setting::AudioQuality | Setting::PlaybackMode | Setting::Volume => {
+                SettingGroup::Playback
+            }
+        }
+    }
+
+    /// The heading the group's page carries.
+    pub fn label(self) -> &'static str {
+        match self {
+            SettingGroup::Playback => crate::strings::nav::PLAYBACK,
+            SettingGroup::Appearance => crate::strings::nav::APPEARANCE,
+        }
     }
 }
 
-/// How many entries the settings page lists.
-pub const SETTINGS_ROWS: usize = Setting::COUNT;
-
-/// The values the settings page shows on the right of each row.
+/// The values the settings pages show on the right of each row.
 ///
 /// A field per setting rather than a list of strings, so a setting that is
 /// added without a value to show is a compile error rather than a blank row.
@@ -84,7 +118,6 @@ impl SettingsValues<'_> {
     /// The value shown against a setting.
     pub fn value(&self, setting: Setting) -> String {
         match setting {
-            Setting::Keybindings => "›".to_string(),
             Setting::AudioQuality => self.quality.to_string(),
             Setting::PlaybackMode => self.mode.to_string(),
             Setting::Volume => format!("{}%", self.volume),
@@ -93,41 +126,121 @@ impl SettingsValues<'_> {
     }
 }
 
-/// A top-level page.
+/// A first-level navigation item (SPEC §10.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Page {
-    Playlist,
-    Favorites,
-    History,
+pub enum Primary {
+    Library,
+    Search,
+    Queue,
     Settings,
 }
 
-impl Page {
-    /// In the order the navigation row lists them.
-    pub const ALL: [Page; 4] = [
-        Page::Playlist,
-        Page::Favorites,
-        Page::History,
-        Page::Settings,
+impl Primary {
+    /// Every item, including the one not drawn yet.
+    pub const ALL: [Primary; 4] = [
+        Primary::Library,
+        Primary::Search,
+        Primary::Queue,
+        Primary::Settings,
     ];
 
-    /// The action that switches to this page, so the navigation row can show
-    /// the key actually bound to it.
-    pub fn action(self) -> Action {
+    /// The items the navigation row draws.
+    ///
+    /// `Search` is reserved but has nothing behind it, and an entry that leads
+    /// nowhere is worse than no entry — the structure keeps its place, the row
+    /// does not (SPEC §10.1).
+    pub const RENDERED: [Primary; 3] = [Primary::Library, Primary::Queue, Primary::Settings];
+
+    pub fn title(self) -> &'static str {
+        use crate::strings::nav;
         match self {
-            Page::Playlist => Action::ShowPlaylist,
-            Page::Favorites => Action::ShowFavorites,
-            Page::History => Action::ShowHistory,
-            Page::Settings => Action::OpenSettings,
+            Primary::Library => nav::LIBRARY,
+            Primary::Search => nav::SEARCH,
+            Primary::Queue => nav::QUEUE,
+            Primary::Settings => nav::SETTINGS,
         }
     }
 
-    pub fn title(self) -> &'static str {
+    /// The action that switches to this item, so the navigation row can show
+    /// the key actually bound to it.
+    pub fn action(self) -> Action {
         match self {
-            Page::Playlist => "PLAYLIST",
-            Page::Favorites => "FAVORITES",
-            Page::History => "HISTORY",
-            Page::Settings => "SETTINGS",
+            Primary::Library => Action::ShowLibrary,
+            Primary::Search => Action::ShowSearch,
+            Primary::Queue => Action::ShowQueue,
+            Primary::Settings => Action::ShowSettings,
+        }
+    }
+
+    /// The secondary items this primary shows.
+    pub fn sections(self) -> &'static [Section] {
+        match self {
+            Primary::Library => &[Section::Liked, Section::Playlists, Section::History],
+            // Nothing is built behind SEARCH yet (SPEC §10.2).
+            Primary::Search => &[],
+            Primary::Queue => &[Section::Current, Section::UpNext],
+            Primary::Settings => &[Section::Playback, Section::Appearance, Section::Keybindings],
+        }
+    }
+
+    /// The secondary item selected when the primary is first reached.
+    pub fn default_section(self) -> Section {
+        match self {
+            // The playlists, not the liked list, are what the browser is for.
+            Primary::Library => Section::Playlists,
+            Primary::Search => Section::Liked,
+            Primary::Queue => Section::Current,
+            Primary::Settings => Section::Playback,
+        }
+    }
+}
+
+/// A secondary item, chosen in the column beside the main area (SPEC §10.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Section {
+    Liked,
+    Playlists,
+    History,
+    Current,
+    UpNext,
+    Playback,
+    Appearance,
+    Keybindings,
+}
+
+impl Section {
+    /// The name the secondary column lists it under.
+    pub fn label(self) -> &'static str {
+        use crate::strings::nav;
+        match self {
+            Section::Liked => nav::LIKED,
+            Section::Playlists => nav::PLAYLISTS,
+            Section::History => nav::HISTORY,
+            Section::Current => nav::CURRENT,
+            Section::UpNext => nav::UP_NEXT,
+            Section::Playback => nav::PLAYBACK,
+            Section::Appearance => nav::APPEARANCE,
+            Section::Keybindings => nav::KEYBINDINGS,
+        }
+    }
+}
+
+/// Which of the two focusable regions holds the focus (SPEC §10.3).
+///
+/// The arrow keys act on whichever this is, so it is also the thing the
+/// interface has to make visible: an explicit scope the user cannot see is the
+/// implicit one §23 forbids by another name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    Secondary,
+    Main,
+}
+
+impl Focus {
+    pub fn toggled(self) -> Self {
+        match self {
+            Focus::Secondary => Focus::Main,
+            Focus::Main => Focus::Secondary,
         }
     }
 }
@@ -238,7 +351,7 @@ pub enum ListView<'a> {
         selected: usize,
         scroll: usize,
     },
-    /// The playback queue, which takes the pane over while it is open.
+    /// The playback queue, which takes the main area over while it is shown.
     Queue {
         songs: &'a [Song],
         /// Which of these is playing, when the track playing is one of them.
@@ -249,8 +362,19 @@ pub enum ListView<'a> {
         selected: usize,
         scroll: usize,
     },
-    /// The settings group list. Values are shown on the right.
+    /// The tracks queued to play next, ahead of the rest of the queue.
+    ///
+    /// Read-only: reordering and deleting act on the queue's own items, not on
+    /// what was queued in front of them (SPEC §17.1). The songs are held as the
+    /// queue's own deque rather than copied out of it.
+    UpNext {
+        songs: &'a VecDeque<Song>,
+        selected: usize,
+        scroll: usize,
+    },
+    /// One group of the settings. Values are shown on the right.
     Settings {
+        group: SettingGroup,
         values: SettingsValues<'a>,
         selected: usize,
         /// The setting being edited right now, drawn so the user can see which
@@ -318,8 +442,10 @@ impl ListView<'_> {
             ListView::Songs { songs, .. }
             | ListView::Likes { songs, .. }
             | ListView::Queue { songs, .. } => songs.len(),
+            ListView::UpNext { songs, .. } => songs.len(),
             ListView::History { entries, .. } => entries.len(),
-            ListView::Settings { .. } => Setting::COUNT,
+            // Only the rows of the group showing, not every setting there is.
+            ListView::Settings { group, .. } => group.count(),
             // One row per action, since every action has a binding.
             ListView::Keybindings { .. } => Action::ALL.len(),
             ListView::Message(_) => 0,
@@ -487,7 +613,12 @@ pub struct StatusView<'a> {
 /// Everything the renderer is allowed to see.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UiState<'a> {
-    pub page: Page,
+    /// Which first-level item is showing.
+    pub primary: Primary,
+    /// Which of its secondary items is selected.
+    pub section: Section,
+    /// Which of the two focusable regions the arrow keys act on.
+    pub focus: Focus,
     pub session: SessionView<'a>,
     pub list: ListView<'a>,
     pub now_playing: NowPlayingView<'a>,
@@ -520,23 +651,65 @@ impl UiState<'_> {
 mod tests {
     use super::*;
 
+    fn state<'a>(keymap: &'a Keymap) -> UiState<'a> {
+        UiState {
+            primary: Primary::Library,
+            section: Section::Playlists,
+            focus: Focus::Main,
+            session: SessionView::Login(LoginView::Starting),
+            list: ListView::Message(""),
+            now_playing: NowPlayingView {
+                song: None,
+                metadata: false,
+                position_ms: None,
+                duration_ms: None,
+                artwork: None,
+                lyrics: LyricsView::Pending,
+                source: None,
+            },
+            status: StatusView {
+                loading: false,
+                notice: None,
+                volume: 72,
+                playback_mode: PlaybackMode::Sequential,
+                queue_len: 0,
+                playback: PlaybackStatus::Stopped,
+                bitrate: None,
+            },
+            keymap,
+            tier: LayoutTier::Standard,
+            cover_size: CoverSize::Normal,
+        }
+    }
+
     #[test]
     fn the_settings_declaration_is_the_whole_page() {
-        // Order, headings and the row count all come from the one list; this
-        // is what would fail if a setting were added to the page without being
-        // added to that list.
-        assert_eq!(Setting::COUNT, SETTINGS_ROWS);
-        assert_eq!(Setting::ALL.len(), SETTINGS_ROWS);
-
+        // Every setting carries a label, and no label is used twice.
         let mut labels = Vec::new();
-        for (index, (setting, label)) in Setting::ALL.iter().enumerate() {
-            assert_eq!(Setting::index_of(*setting), index);
-            assert_eq!(Setting::at(index), Some(*setting));
-            assert_eq!(setting.label(), *label);
-            assert!(!labels.contains(label), "{label} is used twice");
+        for (setting, label) in Setting::ALL {
+            assert_eq!(setting.label(), label);
+            assert!(!labels.contains(&label), "{label} is used twice");
             labels.push(label);
         }
-        assert_eq!(Setting::at(SETTINGS_ROWS), None);
+    }
+
+    #[test]
+    fn every_setting_is_listed_by_exactly_one_group() {
+        // The grouping is what the secondary column shows: a setting that
+        // belongs to no group would be unreachable, and one in two groups
+        // would appear twice.
+        let mut seen = Vec::new();
+        for group in SettingGroup::ALL {
+            assert!(group.count() > 0, "{group:?} lists nothing");
+            for (index, setting) in group.settings().iter().enumerate() {
+                assert_eq!(group.at(index), Some(*setting));
+                assert_eq!(SettingGroup::of(*setting), group);
+                assert!(!seen.contains(setting), "{setting:?} is listed twice");
+                seen.push(*setting);
+            }
+            assert_eq!(group.at(group.count()), None);
+        }
+        assert_eq!(seen.len(), Setting::ALL.len(), "a setting is in no group");
     }
 
     #[test]
@@ -551,58 +724,73 @@ mod tests {
         assert_eq!(values.value(Setting::PlaybackMode), "Sequential");
         assert_eq!(values.value(Setting::Volume), "72%");
         assert_eq!(values.value(Setting::CoverSize), "normal");
-        // The keybinding row opens rather than showing a value of its own.
-        assert_eq!(values.value(Setting::Keybindings), "›");
     }
 
     #[test]
-    fn every_page_has_a_distinct_action_and_title() {
+    fn every_primary_has_a_distinct_action_and_title() {
         let mut actions = Vec::new();
         let mut titles = Vec::new();
-        for page in Page::ALL {
+        for primary in Primary::ALL {
             assert!(
-                !actions.contains(&page.action()),
-                "{page:?} reuses an action"
+                !actions.contains(&primary.action()),
+                "{primary:?} reuses an action"
             );
-            assert!(!titles.contains(&page.title()), "{page:?} reuses a title");
-            actions.push(page.action());
-            titles.push(page.title());
+            assert!(
+                !titles.contains(&primary.title()),
+                "{primary:?} reuses a title"
+            );
+            actions.push(primary.action());
+            titles.push(primary.title());
         }
+    }
+
+    #[test]
+    fn the_reserved_primary_is_not_drawn_but_keeps_its_key() {
+        // SEARCH has no content yet, so it is absent from the row — but its
+        // action and binding exist, so adding it later moves nothing (SPEC
+        // §10.1).
+        assert!(!Primary::RENDERED.contains(&Primary::Search));
+        assert!(Primary::Search.sections().is_empty());
+        assert_eq!(Primary::Search.action(), Action::ShowSearch);
+        assert_eq!(
+            Keymap::default().key_for(Action::ShowSearch),
+            Some(niveus_config::Key::Char('2'))
+        );
+    }
+
+    #[test]
+    fn the_secondary_items_of_each_primary_are_named_and_distinct() {
+        for primary in Primary::ALL {
+            let sections = primary.sections();
+            assert!(
+                sections.contains(&primary.default_section()) || sections.is_empty(),
+                "{primary:?} defaults to an item it does not list"
+            );
+            let mut labels = Vec::new();
+            for section in sections {
+                let label = section.label();
+                assert!(!label.is_empty(), "{section:?} has no label");
+                assert!(!labels.contains(&label), "{label} is used twice");
+                labels.push(label);
+            }
+        }
+    }
+
+    #[test]
+    fn focus_toggles_between_the_two_regions() {
+        assert_eq!(Focus::Secondary.toggled(), Focus::Main);
+        assert_eq!(Focus::Main.toggled(), Focus::Secondary);
     }
 
     #[test]
     fn hints_come_from_the_live_keymap() {
         let keymap = Keymap::default();
-        let state = UiState {
-            page: Page::Playlist,
-            session: SessionView::Login(LoginView::Starting),
-            list: ListView::Message(""),
-            now_playing: NowPlayingView {
-                song: None,
-                metadata: false,
-                position_ms: None,
-                duration_ms: None,
-                artwork: None,
-                lyrics: LyricsView::Pending,
-                source: None,
-            },
-            status: StatusView {
-                loading: false,
-                notice: None,
-                volume: 72,
-                playback_mode: PlaybackMode::Sequential,
-                queue_len: 0,
-                playback: PlaybackStatus::Stopped,
-                bitrate: None,
-            },
-            keymap: &keymap,
-            tier: LayoutTier::Standard,
-            cover_size: CoverSize::Normal,
-        };
+        let state = state(&keymap);
 
-        assert_eq!(state.hint(Action::ShowPlaylist), "[1]");
+        assert_eq!(state.hint(Action::ShowLibrary), "[1]");
+        assert_eq!(state.hint(Action::ShowQueue), "[3]");
+        assert_eq!(state.hint(Action::FocusNext), "[Tab]");
         assert_eq!(state.hint(Action::PlayPause), "[Space]");
-        assert_eq!(state.hint(Action::ToggleQueue), "[U]");
     }
 
     #[test]
@@ -611,33 +799,7 @@ mod tests {
         keymap
             .rebind(Action::Quit, niveus_config::Key::Char('x'))
             .unwrap();
-        let map = keymap;
-        let state = UiState {
-            page: Page::Playlist,
-            session: SessionView::Login(LoginView::Starting),
-            list: ListView::Message(""),
-            now_playing: NowPlayingView {
-                song: None,
-                metadata: false,
-                position_ms: None,
-                duration_ms: None,
-                artwork: None,
-                lyrics: LyricsView::Pending,
-                source: None,
-            },
-            status: StatusView {
-                loading: false,
-                notice: None,
-                volume: 72,
-                playback_mode: PlaybackMode::Sequential,
-                queue_len: 0,
-                playback: PlaybackStatus::Stopped,
-                bitrate: None,
-            },
-            keymap: &map,
-            tier: LayoutTier::Standard,
-            cover_size: CoverSize::Normal,
-        };
+        let state = state(&keymap);
         assert_eq!(state.hint(Action::Quit), "[X]");
     }
 }

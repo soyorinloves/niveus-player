@@ -18,6 +18,7 @@ mod list;
 mod login;
 mod nav;
 mod now_playing;
+mod secondary;
 mod status;
 mod toosmall;
 
@@ -29,6 +30,39 @@ pub(crate) const PANE_RULE: &str = "│";
 pub(crate) const UNKNOWN: &str = "—";
 /// The marker on the row the cursor is on.
 pub(crate) const CURSOR: &str = "▶";
+
+/// The marker a row carries when the cursor is on it.
+///
+/// There is one cursor and it belongs to the region that holds the focus: Tab
+/// moves it there, and the row it leaves keeps only a dimmed label. This is the
+/// visible half of the focus model, and its absence would make the arrows act
+/// on a region the user cannot pick out (SPEC §10.3, §23.1).
+///
+/// It is two columns wide with its trailing space, so every row of every list
+/// is laid out the same whether or not it is selected.
+pub(crate) fn cursor_mark(selected: bool, focused: bool) -> &'static str {
+    if selected && focused {
+        CURSOR
+    } else {
+        " "
+    }
+}
+
+/// How a row's label is drawn, given whether it is selected and whether its
+/// region holds the focus.
+///
+/// The region with the focus draws its selection in the accent colour; the
+/// other region keeps it, dimmed, so the user can still see where the cursor
+/// will be when Tab brings them back.
+pub(crate) fn cursor_style(selected: bool, focused: bool, theme: &Theme) -> Style {
+    if !selected {
+        theme.normal
+    } else if focused {
+        theme.accent
+    } else {
+        theme.muted
+    }
+}
 
 /// Draws one frame.
 pub fn render(frame: &mut Frame, state: &UiState, theme: &Theme) {
@@ -49,10 +83,12 @@ pub fn render(frame: &mut Frame, state: &UiState, theme: &Theme) {
 }
 
 fn draw_sections(frame: &mut Frame, regions: &Regions, state: &UiState, theme: &Theme) {
-    nav::render(frame, regions.nav, state.page, state.keymap, theme);
+    nav::render(frame, regions.nav, state, theme);
     horizontal_rule(frame, regions.nav_rule, theme);
 
-    list::render(frame, regions.list, state, theme);
+    secondary::render(frame, regions.secondary, state, theme);
+    vertical_rule(frame, regions.secondary_rule, theme);
+    list::render(frame, regions.main, state, theme);
     if let Some(area) = regions.pane_rule {
         vertical_rule(frame, area, theme);
     }
@@ -257,12 +293,14 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 
 /// The note shown when a list has no rows and nothing is being fetched.
 pub(crate) fn empty_note(list: &ListView<'_>) -> &'static str {
+    use crate::strings::list as text;
     match list {
-        ListView::Playlists { .. } => "暂无歌单",
-        ListView::Songs { .. } => "该歌单暂无歌曲",
-        ListView::Likes { .. } => "还没有喜欢的歌曲",
-        ListView::History { .. } => "暂无播放记录",
-        ListView::Queue { .. } => "队列为空",
+        ListView::Playlists { .. } => text::EMPTY_PLAYLISTS,
+        ListView::Songs { .. } => text::EMPTY_SONGS,
+        ListView::Likes { .. } => text::EMPTY_LIKED,
+        ListView::History { .. } => text::EMPTY_HISTORY,
+        ListView::Queue { .. } => text::EMPTY_QUEUE,
+        ListView::UpNext { .. } => text::EMPTY_UP_NEXT,
         ListView::Settings { .. } | ListView::Keybindings { .. } | ListView::Message(_) => "",
     }
 }

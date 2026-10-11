@@ -21,9 +21,9 @@ pub enum ParseError {
     /// The body held no timestamped line at all.
     ///
     /// Untimed text is not a timeline: there is no moment to show it at. This is
-    /// the failure the interface reports as `歌词加载失败` (SPEC §13.4) — the
+    /// the failure the interface reports as `Lyrics unavailable` (SPEC §13.4) — the
     /// message naming the underlying reason goes to the log, not the screen.
-    #[error("歌词中没有可用的时间轴")]
+    #[error("no usable timeline in the lyrics")]
     NoTimedLines,
 }
 

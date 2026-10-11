@@ -1,6 +1,7 @@
 //! The screen shown when the terminal cannot hold the interface.
 
 use crate::layout::LayoutTier;
+use crate::strings;
 use crate::theme::Theme;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -9,18 +10,14 @@ use ratatui::Frame;
 
 pub(crate) fn render(frame: &mut Frame, area: Rect, theme: &Theme) {
     let text = vec![
-        Line::from(Span::styled("Terminal size too small", theme.error)),
+        Line::from(Span::styled(strings::usage::TITLE, theme.error)),
         Line::default(),
         Line::from(Span::styled(
-            format!("current: {}×{}", area.width, area.height),
+            strings::usage::current(area.width, area.height),
             theme.muted,
         )),
         Line::from(Span::styled(
-            format!(
-                "needed:  at least {}×{}",
-                LayoutTier::MIN_WIDTH,
-                LayoutTier::MIN_HEIGHT
-            ),
+            strings::usage::needed(LayoutTier::MIN_WIDTH, LayoutTier::MIN_HEIGHT),
             theme.muted,
         )),
     ];

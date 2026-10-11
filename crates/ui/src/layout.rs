@@ -24,8 +24,11 @@ impl LayoutTier {
     /// Below this, nothing is drawn but the size warning.
     pub const MIN_WIDTH: u16 = 80;
     pub const MIN_HEIGHT: u16 = 24;
-    /// At or above this width the two-pane layout becomes possible.
-    pub const STANDARD_WIDTH: u16 = 120;
+    /// At or above this width the now-playing pane joins the two the main
+    /// interface already has. The figure rose from 120 when the interface went
+    /// from two columns to three: at 120 the secondary column, the main area
+    /// and the pane all want space and all three end up cramped (SPEC §22).
+    pub const STANDARD_WIDTH: u16 = 130;
     /// At or above this width the layout is considered roomy.
     pub const WIDE_WIDTH: u16 = 160;
     /// Below this height the two-pane layout is refused regardless of width.
@@ -63,21 +66,32 @@ impl LayoutTier {
     }
 }
 
+/// The width of the secondary column.
+///
+/// Fixed rather than proportioned: it holds one short word per item plus the
+/// focus marker, and a column that grew with the terminal would trade rows of
+/// track titles for blank space beside a category name (SPEC §10.2).
+pub const SECONDARY_WIDTH: u16 = 14;
+
 /// Where each part of the interface goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Regions {
     pub tier: LayoutTier,
     /// The whole terminal.
     pub area: Rect,
-    /// Top-level navigation row.
+    /// First-level navigation row.
     pub nav: Rect,
     /// Rule beneath the navigation row.
     pub nav_rule: Rect,
-    /// Both panes together.
+    /// Everything below the navigation: the columns and the status bar.
     pub body: Rect,
-    /// The browsable list.
-    pub list: Rect,
-    /// Column of `│` between the two panes, when both are shown.
+    /// The secondary column: one item per category.
+    pub secondary: Rect,
+    /// The `│` between the secondary column and the main area.
+    pub secondary_rule: Rect,
+    /// The main area: browsing, and editing within SETTINGS.
+    pub main: Rect,
+    /// Column of `│` between the main area and the now-playing pane.
     pub pane_rule: Option<Rect>,
     /// The now-playing pane, absent at narrow sizes.
     pub now_playing: Option<Rect>,
@@ -94,11 +108,11 @@ pub struct Regions {
 }
 
 impl Regions {
-    /// Rows available for list content.
+    /// Rows available for list content in the main area.
     ///
-    /// The pane's own title and the rule beneath it take two rows.
-    pub fn list_viewport(&self) -> usize {
-        self.list.height.saturating_sub(2) as usize
+    /// Its own title and the rule beneath it take two rows.
+    pub fn main_viewport(&self) -> usize {
+        self.main.height.saturating_sub(2) as usize
     }
 }
 
@@ -259,8 +273,9 @@ pub fn panel_blocks(panel: Rect, metadata: bool) -> PanelBlocks {
 
 /// Divides the terminal into regions for `tier`.
 ///
-/// The two panes are split roughly 55:45, with a single column of rule between
-/// them.
+/// A fixed secondary column on the left, then the main area; at the roomier
+/// tiers the now-playing pane takes the right 45% of what remains, with a
+/// single column of rule between each pair.
 pub fn compute(area: Rect, tier: LayoutTier, cover_size: CoverSize) -> Regions {
     if tier == LayoutTier::TooSmall {
         // Nothing is drawn but the warning, so every region collapses.
@@ -271,7 +286,9 @@ pub fn compute(area: Rect, tier: LayoutTier, cover_size: CoverSize) -> Regions {
             nav: empty,
             nav_rule: empty,
             body: area,
-            list: area,
+            secondary: empty,
+            secondary_rule: empty,
+            main: area,
             pane_rule: None,
             now_playing: None,
             artwork: None,
@@ -290,16 +307,25 @@ pub fn compute(area: Rect, tier: LayoutTier, cover_size: CoverSize) -> Regions {
     ])
     .areas(area);
 
-    let (list, pane_rule, now_playing) = if tier.shows_now_playing() {
-        let [list, pane_rule, right] = Layout::horizontal([
+    // The secondary column is the same width at every tier: it is the spine of
+    // the navigation, and narrowing it would only clip a category name (§22).
+    let [secondary, secondary_rule, rest] = Layout::horizontal([
+        Constraint::Length(SECONDARY_WIDTH),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .areas(body);
+
+    let (main, pane_rule, now_playing) = if tier.shows_now_playing() {
+        let [main, pane_rule, right] = Layout::horizontal([
             Constraint::Fill(55),
             Constraint::Length(1),
             Constraint::Fill(45),
         ])
-        .areas(body);
-        (list, Some(pane_rule), Some(right))
+        .areas(rest);
+        (main, Some(pane_rule), Some(right))
     } else {
-        (body, None, None)
+        (rest, None, None)
     };
 
     // Both come from the one description of what a pane is made of, so the app
@@ -319,7 +345,9 @@ pub fn compute(area: Rect, tier: LayoutTier, cover_size: CoverSize) -> Regions {
         nav,
         nav_rule,
         body,
-        list,
+        secondary,
+        secondary_rule,
+        main,
         pane_rule,
         now_playing,
         artwork,
@@ -355,17 +383,17 @@ mod tests {
     #[test]
     fn the_documented_boundaries_hold() {
         assert_eq!(tier(80, 32), LayoutTier::Minimal);
-        assert_eq!(tier(119, 32), LayoutTier::Minimal);
-        assert_eq!(tier(120, 32), LayoutTier::Standard);
+        assert_eq!(tier(129, 32), LayoutTier::Minimal);
+        assert_eq!(tier(130, 32), LayoutTier::Standard);
         assert_eq!(tier(159, 32), LayoutTier::Standard);
         assert_eq!(tier(160, 32), LayoutTier::Wide);
     }
 
     #[test]
-    fn only_the_roomy_tiers_show_the_second_pane() {
+    fn only_the_roomy_tiers_show_the_third_column() {
         assert!(!tier(80, 24).shows_now_playing());
-        assert!(!tier(119, 32).shows_now_playing());
-        assert!(tier(120, 32).shows_now_playing());
+        assert!(!tier(129, 32).shows_now_playing());
+        assert!(tier(130, 32).shows_now_playing());
         assert!(tier(200, 50).shows_now_playing());
     }
 
@@ -386,13 +414,19 @@ mod tests {
 
         let right = regions.now_playing.expect("standard shows the pane");
         assert_eq!(regions.pane_rule.expect("a rule splits the panes").width, 1);
-        // 55:45 of the 119 usable columns.
-        assert!(regions.list.width > right.width);
-        assert_eq!(regions.list.width + 1 + right.width, 120);
+        // The secondary column and its rule come off first, then 55:45 of what
+        // is left.
+        assert_eq!(regions.secondary.width, SECONDARY_WIDTH);
+        assert_eq!(regions.secondary_rule.width, 1);
+        assert!(regions.main.width > right.width);
+        assert_eq!(
+            regions.main.width + 1 + right.width,
+            120 - SECONDARY_WIDTH - 1
+        );
     }
 
     #[test]
-    fn the_minimal_tier_gives_the_whole_body_to_the_list() {
+    fn the_minimal_tier_keeps_the_secondary_column_and_the_main_area() {
         let regions = compute(
             Rect::new(0, 0, 100, 30),
             LayoutTier::Minimal,
@@ -400,17 +434,19 @@ mod tests {
         );
         assert!(regions.now_playing.is_none());
         assert!(regions.pane_rule.is_none());
-        assert_eq!(regions.list.width, 100);
+        // The column is kept at every tier, only the third one goes (§22).
+        assert_eq!(regions.secondary.width, SECONDARY_WIDTH);
+        assert_eq!(regions.main.width, 100 - SECONDARY_WIDTH - 1);
     }
 
     #[test]
-    fn the_list_viewport_excludes_its_title_and_rule() {
+    fn the_main_viewport_excludes_its_title_and_rule() {
         let regions = compute(
             Rect::new(0, 0, 120, 40),
             LayoutTier::Standard,
             CoverSize::Normal,
         );
-        assert_eq!(regions.list_viewport(), regions.list.height as usize - 2);
+        assert_eq!(regions.main_viewport(), regions.main.height as usize - 2);
     }
 
     #[test]

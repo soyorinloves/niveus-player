@@ -9,14 +9,14 @@ use thiserror::Error;
 /// Why an API call failed, classified for the caller's purposes.
 #[derive(Debug, Error)]
 pub enum ApiFailure {
-    #[error("网络错误: {0}")]
+    #[error("network error: {0}")]
     Network(String),
     /// The session is missing or no longer accepted.
-    #[error("需要登录: {0}")]
+    #[error("sign-in required: {0}")]
     Authentication(String),
-    #[error("接口异常: {0}")]
+    #[error("the service failed: {0}")]
     InvalidResponse(String),
-    #[error("请求过于频繁: {0}")]
+    #[error("too many requests: {0}")]
     RateLimited(String),
 }
 
@@ -39,12 +39,12 @@ pub enum ProviderError {
 
     /// The service answered, but its data could not be expressed as a domain
     /// object.
-    #[error("数据转换失败: {0}")]
+    #[error("could not map the response: {0}")]
     Mapping(String),
 
     /// The service answered normally and the requested thing does not exist or
     /// cannot be served — an unplayable track, an empty playlist.
-    #[error("资源不可用: {0}")]
+    #[error("resource unavailable: {0}")]
     MissingResource(String),
 }
 

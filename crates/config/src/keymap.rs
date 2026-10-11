@@ -164,15 +164,18 @@ impl FromStr for Key {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
-    // Navigation between top-level pages.
-    ShowPlaylist,
-    ShowFavorites,
-    ShowHistory,
-    OpenSettings,
-    // Panels and views. The metadata panel is a switch rather than a view of
-    // its own, so there is one action here, not two (SPEC §12.1, §24).
+    // The first-level navigation. `Search` is reserved: the item is not drawn
+    // yet, but its key is held so that adding it later moves nothing else
+    // (SPEC §10.1, §24).
+    ShowLibrary,
+    ShowSearch,
+    ShowQueue,
+    ShowSettings,
+    // Focus and panels. `FocusNext` moves between the secondary column and the
+    // main area (§10.3); the metadata panel is a switch rather than a view of
+    // its own, so there is one action for it, not two (§12.1, §24).
+    FocusNext,
     ToggleMetadata,
-    ToggleQueue,
     Back,
     // List movement and activation.
     MoveUp,
@@ -199,12 +202,12 @@ pub enum Action {
 impl Action {
     /// Every action, used by keymap validation.
     pub const ALL: [Action; 23] = [
-        Action::ShowPlaylist,
-        Action::ShowFavorites,
-        Action::ShowHistory,
-        Action::OpenSettings,
+        Action::ShowLibrary,
+        Action::ShowSearch,
+        Action::ShowQueue,
+        Action::ShowSettings,
+        Action::FocusNext,
         Action::ToggleMetadata,
-        Action::ToggleQueue,
         Action::Back,
         Action::MoveUp,
         Action::MoveDown,
@@ -227,12 +230,12 @@ impl Action {
     /// Name used as the key in `config.toml`'s `[keybindings]` table.
     pub fn name(self) -> &'static str {
         match self {
-            Action::ShowPlaylist => "playlist",
-            Action::ShowFavorites => "favorites",
-            Action::ShowHistory => "history",
-            Action::OpenSettings => "settings",
+            Action::ShowLibrary => "library",
+            Action::ShowSearch => "search",
+            Action::ShowQueue => "queue",
+            Action::ShowSettings => "settings",
+            Action::FocusNext => "focus_next",
             Action::ToggleMetadata => "metadata",
-            Action::ToggleQueue => "queue",
             Action::Back => "back",
             Action::MoveUp => "move_up",
             Action::MoveDown => "move_down",
@@ -264,13 +267,13 @@ impl fmt::Display for Action {
     }
 }
 
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum KeymapError {
-    #[error("未知按键: {0}")]
+    #[error("unknown key: {0}")]
     UnknownKey(String),
-    #[error("未知操作: {0}")]
+    #[error("unknown action: {0}")]
     UnknownAction(String),
-    #[error("按键冲突: {key} 已绑定到 {existing}，不能同时绑定 {incoming}")]
+    #[error("key {key} is already bound to {existing}, so it cannot also bind {incoming}")]
     Conflict {
         key: Key,
         existing: Action,
@@ -288,12 +291,17 @@ impl Default for Keymap {
     fn default() -> Self {
         use Action::*;
         let entries = [
-            (ShowPlaylist, "1"),
-            (ShowFavorites, "2"),
-            (ShowHistory, "3"),
-            (OpenSettings, "4"),
+            // The first-level navigation, by number. The numbers are held by
+            // category rather than by how many items are drawn, so `search`
+            // keeps `2` until the item exists (SPEC §10.1, §24).
+            (ShowLibrary, "1"),
+            (ShowSearch, "2"),
+            (ShowQueue, "3"),
+            (ShowSettings, "4"),
+            // Focus moves between the secondary column and the main area, and
+            // is what makes the arrow keys' target visible (§10.3).
+            (FocusNext, "tab"),
             (ToggleMetadata, "m"),
-            (ToggleQueue, "u"),
             (Back, "esc"),
             (MoveUp, "up"),
             (MoveDown, "down"),
@@ -436,7 +444,11 @@ mod tests {
     #[test]
     fn defaults_match_the_documented_bindings() {
         let map = Keymap::default();
-        assert_eq!(map.key_for(Action::ShowPlaylist), Some(Key::Char('1')));
+        assert_eq!(map.key_for(Action::ShowLibrary), Some(Key::Char('1')));
+        assert_eq!(map.key_for(Action::ShowSearch), Some(Key::Char('2')));
+        assert_eq!(map.key_for(Action::ShowQueue), Some(Key::Char('3')));
+        assert_eq!(map.key_for(Action::ShowSettings), Some(Key::Char('4')));
+        assert_eq!(map.key_for(Action::FocusNext), Some(Key::Tab));
         assert_eq!(map.key_for(Action::Back), Some(Key::Esc));
         assert_eq!(map.key_for(Action::PlayPause), Some(Key::Space));
         assert_eq!(map.key_for(Action::VolumeUp), Some(Key::Char('=')));
@@ -570,7 +582,7 @@ mod tests {
 
     #[test]
     fn a_key_already_held_by_an_untouched_action_is_still_refused() {
-        // `1` belongs to the playlist page, which the file says nothing about.
+        // `1` belongs to the library page, which the file says nothing about.
         let mut overrides = std::collections::HashMap::new();
         overrides.insert("next".to_string(), "1".to_string());
 
@@ -578,7 +590,7 @@ mod tests {
         let errors = map.apply_overrides(&overrides);
 
         assert_eq!(errors.len(), 1, "{errors:?}");
-        assert_eq!(map.key_for(Action::ShowPlaylist), Some(Key::Char('1')));
+        assert_eq!(map.key_for(Action::ShowLibrary), Some(Key::Char('1')));
         // And the action that was refused keeps the binding it had, rather
         // than being left with none at all.
         assert_eq!(map.key_for(Action::Next), Some(Key::Char('n')));

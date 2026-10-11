@@ -5,6 +5,7 @@
 
 use crate::paths::Paths;
 use niveus_player::player_path;
+use niveus_ui::strings;
 
 /// The outcome of the checks.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -13,28 +14,22 @@ pub struct Preflight {
     pub warnings: Vec<String>,
 }
 
-/// Runs the checks, or explains in Chinese why the program cannot start.
+/// Runs the checks, or explains why the program cannot start.
 pub fn check(paths: &Paths) -> Result<Preflight, String> {
     // The lookup lives with the player: two copies of it could drift apart,
     // and the one that matters is the one the player actually uses.
-    let mpv = player_path().ok_or_else(|| {
-        "未找到 mpv。Niveus 使用 mpv 播放音频，请用你的发行版包管理器安装 mpv。".to_string()
-    })?;
+    let mpv = player_path().ok_or_else(|| strings::preflight::MPV_MISSING.to_string())?;
     tracing::info!(path = %mpv.display(), "found player");
 
-    paths.ensure_dirs().map_err(|e| {
-        format!("无法创建配置/状态目录：{e}。请检查 XDG_CONFIG_HOME / XDG_STATE_HOME 是否可写。")
-    })?;
+    paths
+        .ensure_dirs()
+        .map_err(|e| strings::preflight::dirs_failed(&e.to_string()))?;
 
     let mut warnings = Vec::new();
     if !locale_is_utf8() {
         // Not fatal: the interface relies on box-drawing and block characters,
         // which a non-UTF-8 locale will mangle, but the user may know better.
-        warnings.push(
-            "当前 locale 不是 UTF-8，界面中的 ─ │ ● ▶ ∞ 等字符可能显示异常。\
-             建议设置 LANG=en_US.UTF-8 或 zh_CN.UTF-8。"
-                .to_string(),
-        );
+        warnings.push(strings::preflight::NON_UTF8_LOCALE.to_string());
         tracing::warn!("non-UTF-8 locale");
     }
 

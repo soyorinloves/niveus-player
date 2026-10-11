@@ -8,6 +8,7 @@ use super::{
 };
 use crate::layout::{pane_rows, panel_blocks, Regions};
 use crate::state::{ArtworkInk, ArtworkView, LyricWindow, LyricsView, NowPlayingView, UiState};
+use crate::strings;
 use crate::theme::Theme;
 use niveus_config::Action;
 use niveus_music_core::Song;
@@ -37,7 +38,7 @@ pub(crate) fn render(frame: &mut Frame, regions: &Regions, state: &UiState, them
     let rows = pane_rows(area, state.cover_size);
 
     frame.render_widget(
-        Paragraph::new(line_of("NOW PLAYING", theme.heading)),
+        Paragraph::new(line_of(strings::now_playing::TITLE, theme.heading)),
         rows.title,
     );
     horizontal_rule(frame, rows.title_rule, theme);
@@ -156,7 +157,11 @@ fn classic_colour(index: u8) -> Color {
 /// while it is on.
 fn render_section(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme) {
     let metadata = Span::styled(
-        format!("METADATA {}", state.hint(Action::ToggleMetadata)),
+        format!(
+            "{} {}",
+            strings::now_playing::METADATA,
+            state.hint(Action::ToggleMetadata)
+        ),
         if state.now_playing.metadata {
             theme.emphasis
         } else {
@@ -165,7 +170,7 @@ fn render_section(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme)
     );
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("LYRICS", theme.muted),
+            Span::styled(strings::now_playing::LYRICS, theme.muted),
             Span::raw("    "),
             metadata,
         ])),
@@ -224,11 +229,19 @@ fn lyrics_lines(lyrics: &LyricsView<'_>, width: u16, theme: &Theme) -> Vec<Line<
         LyricsView::Window(window) => window_lines(window, width, theme),
         // A notice is a whole line of the panel too, so it sits on the same
         // centre line the lyrics do (SPEC §13.3).
-        LyricsView::TranslationOnly => vec![centred("暂无原文歌词", theme.muted, width)],
-        LyricsView::Instrumental => vec![centred("♪ 纯音乐", theme.muted, width)],
+        LyricsView::TranslationOnly => vec![centred(
+            strings::now_playing::TRANSLATION_ONLY,
+            theme.muted,
+            width,
+        )],
+        LyricsView::Instrumental => vec![centred(
+            strings::now_playing::INSTRUMENTAL,
+            theme.muted,
+            width,
+        )],
         // The one failure the panel reports. What went wrong is in the log; the
         // panel says only that the lyrics are not usable (SPEC §13.4, §33).
-        LyricsView::Failed => vec![centred("歌词加载失败", theme.error, width)],
+        LyricsView::Failed => vec![centred(strings::now_playing::FAILED, theme.error, width)],
     }
 }
 
@@ -285,7 +298,7 @@ fn metadata_lines(state: &NowPlayingView<'_>, width: u16, theme: &Theme) -> Vec<
 
     vec![
         field(
-            "ALBUM",
+            strings::now_playing::METADATA_ALBUM,
             state
                 .song
                 .and_then(|song| song.album.as_ref())
@@ -293,16 +306,27 @@ fn metadata_lines(state: &NowPlayingView<'_>, width: u16, theme: &Theme) -> Vec<
         ),
         // The player's own figure wins, exactly as it does on the progress row
         // below: it is what the file turned out to be, not what was promised.
-        metadata_line("DURATION", format_duration(state.duration_ms), width, theme),
+        metadata_line(
+            strings::now_playing::METADATA_DURATION,
+            format_duration(state.duration_ms),
+            width,
+            theme,
+        ),
         field(
-            "QUALITY",
+            strings::now_playing::METADATA_QUALITY,
             source
                 .and_then(|s| s.level)
                 .map(|level| level.label().to_string()),
         ),
-        field("FORMAT", source.and_then(|s| s.format.clone())),
+        field(
+            strings::now_playing::METADATA_FORMAT,
+            source.and_then(|s| s.format.clone()),
+        ),
         // Five fields for the five rows the panel reserves (SPEC §14).
-        field("SONG ID", state.song.map(|song| song.id.get().to_string())),
+        field(
+            strings::now_playing::METADATA_SONG_ID,
+            state.song.map(|song| song.id.get().to_string()),
+        ),
     ]
 }
 
@@ -395,7 +419,8 @@ mod tests {
     use crate::layout::{compute, LayoutTier, METADATA_ROWS};
     use crate::render::render;
     use crate::state::{
-        ListView, LyricWindow, LyricsView, NowPlayingView, Page, SessionView, StatusView, UiState,
+        Focus, ListView, LyricWindow, LyricsView, NowPlayingView, Primary, Section, SessionView,
+        StatusView, UiState,
     };
     use crate::testing::{row_text, row_width};
     use niveus_config::{CoverSize, Keymap};
@@ -473,7 +498,9 @@ mod tests {
             name: "n".into(),
         };
         let state = UiState {
-            page: Page::Playlist,
+            primary: Primary::Library,
+            section: Section::Playlists,
+            focus: Focus::Main,
             session: SessionView::Ready { user: &user },
             list: ListView::Message(""),
             now_playing: NowPlayingView {
@@ -865,9 +892,12 @@ mod tests {
         // Each of these is a different thing to say, and none of them is the
         // same as the panel merely being empty.
         let cases: [(LyricsView<'static>, &str); 3] = [
-            (LyricsView::Instrumental, "♪ 纯音乐"),
-            (LyricsView::TranslationOnly, "暂无原文歌词"),
-            (LyricsView::Failed, "歌词加载失败"),
+            (LyricsView::Instrumental, strings::now_playing::INSTRUMENTAL),
+            (
+                LyricsView::TranslationOnly,
+                strings::now_playing::TRANSLATION_ONLY,
+            ),
+            (LyricsView::Failed, strings::now_playing::FAILED),
         ];
         for (lyrics, expected) in cases.iter() {
             let seen = pane_text(&draw(showing_lyrics(lyrics.clone())));
@@ -897,9 +927,12 @@ mod tests {
         // centre line as a lyric would (SPEC §13.3).
         let width = panel_area().width as usize;
         for (lyrics, notice) in [
-            (LyricsView::Instrumental, "♪ 纯音乐"),
-            (LyricsView::TranslationOnly, "暂无原文歌词"),
-            (LyricsView::Failed, "歌词加载失败"),
+            (LyricsView::Instrumental, strings::now_playing::INSTRUMENTAL),
+            (
+                LyricsView::TranslationOnly,
+                strings::now_playing::TRANSLATION_ONLY,
+            ),
+            (LyricsView::Failed, strings::now_playing::FAILED),
         ] {
             let buffer = draw(showing_lyrics(lyrics));
             assert_eq!(
@@ -915,7 +948,11 @@ mod tests {
         // Saying a track is instrumental before the answer arrives would be a
         // guess, and a wrong one on most tracks.
         let seen = pane_text(&draw(showing_lyrics(LyricsView::Pending)));
-        for claim in ["♪ 纯音乐", "暂无原文歌词", "歌词加载失败"] {
+        for claim in [
+            strings::now_playing::INSTRUMENTAL,
+            strings::now_playing::TRANSLATION_ONLY,
+            strings::now_playing::FAILED,
+        ] {
             assert!(!seen.contains(claim), "{seen}");
         }
     }
@@ -925,7 +962,10 @@ mod tests {
         // The one state that is an error says so in the colour the theme keeps
         // for failures; the two ordinary ones do not.
         let failed = draw(showing_lyrics(LyricsView::Failed));
-        assert_eq!(cell_of(&failed, "歌词加载失败").fg, Color::Red);
+        assert_eq!(
+            cell_of(&failed, strings::now_playing::FAILED).fg,
+            Color::Red
+        );
     }
 
     // ---- the section labels ----------------------------------------------

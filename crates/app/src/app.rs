@@ -7,7 +7,7 @@ use crate::state::AppState;
 use niveus_config::Config;
 use niveus_mpris::MprisService;
 use niveus_ncm_provider::NcmProvider;
-use niveus_ui::Theme;
+use niveus_ui::{strings, Theme};
 use ratatui::layout::Rect;
 use ratatui::DefaultTerminal;
 use std::sync::Arc;
@@ -32,7 +32,7 @@ pub async fn run(paths: Paths, config: Config, warnings: Vec<String>) -> anyhow:
     let (restored, error) = StateFile::load(&state.paths.state_file());
     if let Some(error) = error {
         tracing::warn!(%error, "cannot use the saved state, starting fresh");
-        state.warn(format!("无法恢复上次的状态：{error}"));
+        state.warn(strings::notice::state_restore_failed(&error.to_string()));
     }
     state.restore(restored);
     state.refresh_artwork(&tx);
@@ -48,10 +48,7 @@ pub async fn run(paths: Paths, config: Config, warnings: Vec<String>) -> anyhow:
         // The usual cause is being started without a terminal attached — from a
         // pipe, a service, or a desktop launcher. The raw OS error says nothing
         // useful to a person, so it is explained instead.
-        anyhow::anyhow!(
-            "无法初始化终端：{error}。\
-             请在终端中直接运行 niveus；若从脚本调用，请为其分配一个伪终端（pty）。"
-        )
+        anyhow::anyhow!("{}", strings::notice::terminal_init(&error.to_string()))
     })?;
     install_panic_hook();
 
@@ -87,7 +84,7 @@ async fn spawn_mpris(state: &mut AppState, tx: &mpsc::Sender<AppEvent>) {
         }
         Err(error) => {
             tracing::warn!(%error, "no desktop integration");
-            state.notify(format!("桌面集成不可用：{error}"));
+            state.notify(strings::notice::desktop_unavailable(&error.to_string()));
             return;
         }
     }
@@ -115,7 +112,7 @@ async fn spawn_player(state: &mut AppState, tx: &mpsc::Sender<AppEvent>) {
         Ok(()) => tracing::info!("player started"),
         Err(error) => {
             tracing::error!(%error, "cannot start the player");
-            state.notify(format!("无法启动播放器：{error}"));
+            state.notify(strings::notice::player_start_failed(&error.to_string()));
         }
     }
 }

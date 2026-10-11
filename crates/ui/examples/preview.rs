@@ -33,8 +33,8 @@ use niveus_music_core::{
     PlayedSong, Playlist, PlaylistId, PlaylistKind, Song, SongId, User, UserId,
 };
 use niveus_ui::{
-    render, LayoutTier, ListView, LyricWindow, LyricsView, NowPlayingView, Page, SessionView,
-    Setting, SettingsValues, StatusView, Theme, UiState,
+    render, Focus, LayoutTier, ListView, LyricWindow, LyricsView, NowPlayingView, Primary, Section,
+    SessionView, Setting, SettingGroup, SettingsValues, StatusView, Theme, UiState,
 };
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
@@ -143,18 +143,34 @@ fn main() {
             },
         ),
         // The settings list, and the same list with a value being changed.
-        "settings" | "settings-edit" => (
+        "settings" => (
             Rect::new(0, 0, 120, 32),
             LayoutTier::Standard,
             ListView::Settings {
+                group: SettingGroup::Playback,
                 values: SettingsValues {
                     quality: "exhigh",
                     mode: "Sequential",
                     volume: 72,
                     cover_size: "normal",
                 },
-                selected: 4,
-                editing: (mode == "settings-edit").then_some(Setting::CoverSize),
+                selected: 1,
+                editing: None,
+            },
+        ),
+        "settings-edit" => (
+            Rect::new(0, 0, 120, 32),
+            LayoutTier::Standard,
+            ListView::Settings {
+                group: SettingGroup::Appearance,
+                values: SettingsValues {
+                    quality: "exhigh",
+                    mode: "Sequential",
+                    volume: 72,
+                    cover_size: "normal",
+                },
+                selected: 0,
+                editing: Some(Setting::CoverSize),
             },
         ),
         // The keybinding list, which is drawn from the live keymap.
@@ -227,7 +243,9 @@ fn main() {
     };
 
     let state = UiState {
-        page: Page::Playlist,
+        primary: Primary::Library,
+        section: Section::Playlists,
+        focus: Focus::Main,
         session: SessionView::Ready { user: &user },
         list,
         now_playing: NowPlayingView {

@@ -9,20 +9,20 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum ApiError {
     /// The request never produced a usable answer: transport failure or timeout.
-    #[error("网络请求失败: {0}")]
+    #[error("network request failed: {0}")]
     Network(String),
 
     /// The session is missing, expired, or rejected by the service.
-    #[error("需要登录: {0}")]
+    #[error("sign-in required: {0}")]
     Authentication(String),
 
     /// An answer arrived but was not what the endpoint promises: an unexpected
     /// shape, a malformed payload, or a service-level rejection.
-    #[error("接口返回异常: {0}")]
+    #[error("unexpected response from the service: {0}")]
     InvalidResponse(String),
 
     /// The service is throttling us.
-    #[error("请求过于频繁: {0}")]
+    #[error("too many requests: {0}")]
     RateLimited(String),
 }
 
@@ -44,11 +44,11 @@ impl From<ncm_api_rs::NcmError> for ApiError {
             NcmError::AuthRequired(m) => ApiError::Authentication(m),
             NcmError::RateLimited(m) => ApiError::RateLimited(m),
             NcmError::Api { code, msg } => {
-                ApiError::InvalidResponse(format!("服务返回 code={code}: {msg}"))
+                ApiError::InvalidResponse(format!("service returned code={code}: {msg}"))
             }
             NcmError::InvalidParam(m) => ApiError::InvalidResponse(m),
-            NcmError::Crypto(m) => ApiError::InvalidResponse(format!("加密失败: {m}")),
-            NcmError::Json(e) => ApiError::InvalidResponse(format!("JSON 解析失败: {e}")),
+            NcmError::Crypto(m) => ApiError::InvalidResponse(format!("encryption failed: {m}")),
+            NcmError::Json(e) => ApiError::InvalidResponse(format!("JSON parse failed: {e}")),
             NcmError::Unknown(m) => ApiError::Network(m),
         }
     }

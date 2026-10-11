@@ -23,11 +23,11 @@ use thiserror::Error;
 /// impossible to diagnose otherwise.
 #[derive(Debug, Error)]
 pub enum StateError {
-    #[error("无法读取状态文件: {0}")]
+    #[error("cannot read the state file: {0}")]
     Read(#[source] std::io::Error),
-    #[error("状态文件解析失败: {0}")]
+    #[error("the state file could not be parsed: {0}")]
     Parse(#[source] serde_json::Error),
-    #[error("无法写入状态文件: {0}")]
+    #[error("cannot write the state file: {0}")]
     Write(#[source] std::io::Error),
 }
 

@@ -6,5 +6,5 @@
 pub mod config;
 pub mod keymap;
 
-pub use config::{ArtworkMode, ColorMode, Config, ConfigError, ConfigNotice, CoverSize};
+pub use config::{ArtworkMode, ColorMode, Config, ConfigError, ConfigIssue, CoverSize};
 pub use keymap::{Action, Key, Keymap, KeymapError};

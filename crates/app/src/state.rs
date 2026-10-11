@@ -16,8 +16,8 @@ use niveus_music_core::{
 use niveus_ncm_provider::{MusicProvider, NcmProvider, ProviderError, QrLoginState};
 use niveus_player::{LaunchOptions, Player, PlayerError, PlayerEvent};
 use niveus_ui::{
-    ArtworkView, ListView, LoginView, LyricWindow, LyricsView, Page, QrGrid, SessionView, Setting,
-    SettingsValues, StatusView, UiState,
+    strings, ArtworkView, Focus, ListView, LoginView, LyricWindow, LyricsView, Primary, QrGrid,
+    Section, SessionView, Setting, SettingGroup, SettingsValues, StatusView, UiState,
 };
 use ratatui::layout::Rect;
 use std::collections::{HashMap, VecDeque};
@@ -67,6 +67,7 @@ enum ListId {
     Likes,
     History,
     Queue,
+    UpNext,
     Settings,
     Keybindings,
 }
@@ -83,7 +84,7 @@ impl ListId {
             ListId::Likes => Some("likes".to_string()),
             ListId::History => Some("history".to_string()),
             ListId::Playlist(id) => Some(format!("playlist:{id}")),
-            ListId::Queue | ListId::Settings | ListId::Keybindings => None,
+            ListId::Queue | ListId::UpNext | ListId::Settings | ListId::Keybindings => None,
         }
     }
 
@@ -120,9 +121,11 @@ enum SettingsMode {
     /// Changing the value of one of them: the arrows adjust it and Enter puts
     /// it back down.
     Editing(Setting),
-    /// The keybinding list is open.
-    Keybindings,
-    /// The keybinding list is open and the next key pressed will be bound.
+    /// The keybinding list is showing and the next key pressed will be bound.
+    ///
+    /// The list being *open* is not a mode of its own any more: it is the
+    /// KEYBINDINGS secondary item (§10.2), and this only says whether a rebind
+    /// is in progress.
     Capturing,
 }
 
@@ -146,7 +149,7 @@ enum LyricsState {
     Failed,
 }
 
-/// Which list the browsable pane is showing.
+/// Which list the main area is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pane {
     Playlists,
@@ -154,7 +157,9 @@ enum Pane {
     Likes,
     History,
     Queue,
+    UpNext,
     Settings,
+    Keybindings,
 }
 
 #[derive(Debug, Clone)]
@@ -174,8 +179,13 @@ pub struct AppState {
     /// The displayed code, kept so the renderer can borrow it each frame.
     pub qr: Option<QrGrid>,
 
-    pub page: Page,
-    /// The playlist whose tracks are on screen, when the pane is showing any.
+    /// Which first-level item is showing, and which of its secondary items.
+    pub primary: Primary,
+    pub section: Section,
+    /// Which of the two focusable regions the arrow keys act on (§10.3).
+    pub focus: Focus,
+    /// The playlist whose tracks are on screen, when the main area is showing
+    /// any.
     pub opened_playlist: Option<Playlist>,
     pub created: Vec<Playlist>,
     pub collected: Vec<Playlist>,
@@ -206,8 +216,6 @@ pub struct AppState {
     /// The track playing now, with the resource it is playing from.
     pub current_song: Option<Song>,
     pub source: Option<AudioSource>,
-    /// Whether the queue has taken the pane over.
-    pub queue_view: bool,
     /// What the lyrics panel has for the track playing now.
     lyrics: LyricsState,
     /// The picture showing in the now-playing pane, once one is ready.
@@ -313,7 +321,11 @@ impl AppState {
             user: None,
             login: LoginPhase::Restoring,
             qr: None,
-            page: Page::Playlist,
+            primary: Primary::Library,
+            section: Section::Playlists,
+            // The main area holds the content the arrow keys are mostly wanted
+            // for; Tab reaches the secondary column (SPEC §10.3).
+            focus: Focus::Main,
             opened_playlist: None,
             created: Vec::new(),
             collected: Vec::new(),
@@ -330,7 +342,6 @@ impl AppState {
             player: None,
             current_song: None,
             source: None,
-            queue_view: false,
             lyrics: LyricsState::default(),
             artwork: None,
             artwork_key: None,
@@ -430,7 +441,7 @@ impl AppState {
             Ok(()) => tracing::debug!(path = %path.display(), "state saved"),
             Err(error) => {
                 tracing::warn!(path = %path.display(), %error, "cannot save state");
-                self.notify("状态无法保存，下次启动将无法恢复");
+                self.notify(strings::notice::STATE_SAVE_FAILED);
             }
         }
     }
@@ -481,7 +492,9 @@ impl AppState {
     /// The read-only view the renderer consumes.
     pub fn ui_state(&self) -> UiState<'_> {
         UiState {
-            page: self.page,
+            primary: self.primary,
+            section: self.section,
+            focus: self.focus,
             session: self.session_view(),
             list: self.list_view(),
             now_playing: niveus_ui::state::NowPlayingView {
@@ -573,18 +586,36 @@ impl AppState {
         }
     }
 
+    /// Which list the main area is showing.
     fn pane(&self) -> Pane {
-        // The queue replaces whatever list was showing, and gives it back when
-        // it is closed.
-        if self.queue_view {
-            return Pane::Queue;
+        match self.primary {
+            Primary::Library => match self.section {
+                // A playlist that was opened stays open even after stepping to
+                // another category and back: coming back to PLAYLISTS means
+                // coming back to where the user was (SPEC §11).
+                Section::Playlists if self.opened_playlist.is_some() => Pane::Songs,
+                Section::Liked => Pane::Likes,
+                Section::History => Pane::History,
+                _ => Pane::Playlists,
+            },
+            Primary::Queue => match self.section {
+                Section::UpNext => Pane::UpNext,
+                _ => Pane::Queue,
+            },
+            Primary::Settings => match self.section {
+                Section::Keybindings => Pane::Keybindings,
+                _ => Pane::Settings,
+            },
+            // SEARCH is not drawn and cannot be reached (§10.1).
+            Primary::Search => Pane::Playlists,
         }
-        match self.page {
-            Page::Playlist if self.opened_playlist.is_some() => Pane::Songs,
-            Page::Playlist => Pane::Playlists,
-            Page::Favorites => Pane::Likes,
-            Page::History => Pane::History,
-            Page::Settings => Pane::Settings,
+    }
+
+    /// The settings group the SETTINGS secondary item is showing.
+    fn setting_group(&self) -> SettingGroup {
+        match self.section {
+            Section::Appearance => SettingGroup::Appearance,
+            _ => SettingGroup::Playback,
         }
     }
 
@@ -629,17 +660,19 @@ impl AppState {
                 selected: self.selected,
                 scroll: self.scroll,
             },
-            Pane::Settings
-                if self.settings_mode == SettingsMode::Keybindings
-                    || self.settings_mode == SettingsMode::Capturing =>
-            {
-                ListView::Keybindings {
-                    selected: self.selected,
-                    scroll: self.scroll,
-                    capturing: self.settings_mode == SettingsMode::Capturing,
-                }
-            }
+            // Read-only: what was queued to play next, in order (SPEC §17.1).
+            Pane::UpNext => ListView::UpNext {
+                songs: &self.queue.pending_next,
+                selected: self.selected,
+                scroll: self.scroll,
+            },
+            Pane::Keybindings => ListView::Keybindings {
+                selected: self.selected,
+                scroll: self.scroll,
+                capturing: self.settings_mode == SettingsMode::Capturing,
+            },
             Pane::Settings => ListView::Settings {
+                group: self.setting_group(),
                 values: SettingsValues {
                     quality: self.config.audio_quality.label(),
                     mode: self.queue.playback_mode.label(),
@@ -669,7 +702,7 @@ impl AppState {
         );
         let list = self.list_view();
         let per_item = list.rows_per_item().max(1);
-        let rows = regions.list_viewport().saturating_sub(list.fixed_rows());
+        let rows = regions.main_viewport().saturating_sub(list.fixed_rows());
         (rows / per_item).max(1)
     }
 
@@ -698,12 +731,11 @@ impl AppState {
             Pane::Likes => ListId::Likes,
             Pane::History => ListId::History,
             Pane::Queue => ListId::Queue,
+            Pane::UpNext => ListId::UpNext,
+            Pane::Settings => ListId::Settings,
             // The keybinding list is a list of its own: it remembers its own
             // position, so reopening it does not land on the wrong row.
-            Pane::Settings => match self.settings_mode {
-                SettingsMode::Keybindings | SettingsMode::Capturing => ListId::Keybindings,
-                _ => ListId::Settings,
-            },
+            Pane::Keybindings => ListId::Keybindings,
         }
     }
 
@@ -872,11 +904,11 @@ impl AppState {
 
     /// Loads whatever the current page needs, if it is not loaded already.
     pub fn ensure_current_page(&mut self, tx: &Sender<AppEvent>) {
-        match self.page {
-            Page::Playlist if self.created.is_empty() && self.collected.is_empty() => {
+        match self.pane() {
+            Pane::Playlists if self.created.is_empty() && self.collected.is_empty() => {
                 self.request_playlists(tx)
             }
-            Page::Favorites if !self.likes_loaded => self.request_likes(tx),
+            Pane::Likes if !self.likes_loaded => self.request_likes(tx),
             _ => {}
         }
     }
@@ -888,22 +920,31 @@ impl AppState {
     pub async fn handle_action(&mut self, action: Action, tx: &Sender<AppEvent>) {
         match action {
             Action::Quit => self.quit = true,
-            Action::ShowPlaylist => self.go_to_page(Page::Playlist, tx),
-            Action::ShowFavorites => self.go_to_page(Page::Favorites, tx),
-            Action::ShowHistory => self.go_to_page(Page::History, tx),
-            Action::OpenSettings => self.go_to_page(Page::Settings, tx),
+            // The first-level navigation.
+            Action::ShowLibrary => self.go_to_primary(Primary::Library, tx),
+            Action::ShowQueue => self.go_to_primary(Primary::Queue, tx),
+            Action::ShowSettings => self.go_to_primary(Primary::Settings, tx),
+            // Reserved for SEARCH, which is not built yet: the key is held, and
+            // says so rather than doing nothing (SPEC §10.1).
+            Action::ShowSearch => self.notify(strings::notice::SEARCH_UNIMPLEMENTED),
+            // Focus moves the arrows between the two focusable regions (§10.3).
+            Action::FocusNext => self.focus = self.focus.toggled(),
             Action::Back => self.go_back(),
-            // The arrows change a setting only while one is being edited;
-            // otherwise they always mean "move the cursor".
+            // The arrows change a setting only while one is being edited; then
+            // they move the secondary column, then the list (§10.3).
             Action::MoveUp if self.editing_setting().is_some() => self.adjust_setting(-1, tx).await,
             Action::MoveDown if self.editing_setting().is_some() => {
                 self.adjust_setting(1, tx).await
             }
+            Action::MoveUp if self.focus == Focus::Secondary => self.move_section(-1, tx),
+            Action::MoveDown if self.focus == Focus::Secondary => self.move_section(1, tx),
             Action::MoveUp => self.move_selection(-1),
             Action::MoveDown => self.move_selection(1),
+            // In the secondary column Enter steps into the main area; only there
+            // does it open a playlist or play a track (§10.2).
+            Action::Select if self.focus == Focus::Secondary => self.focus = Focus::Main,
             Action::Select => self.activate(tx).await,
             Action::ToggleMetadata => self.metadata = !self.metadata,
-            Action::ToggleQueue => self.toggle_queue_view(),
             Action::CyclePlaybackMode => self.cycle_playback_mode(),
             Action::VolumeUp => self.change_volume(VOLUME_STEP).await,
             Action::VolumeDown => self.change_volume(-VOLUME_STEP).await,
@@ -919,45 +960,53 @@ impl AppState {
         }
     }
 
-    fn go_to_page(&mut self, page: Page, tx: &Sender<AppEvent>) {
-        // Changing page while the queue is open also closes it; asking again
-        // for the page already showing only closes the queue.
-        if self.page == page && !self.queue_view {
+    /// Switches first-level item, opening on whichever secondary item it
+    /// starts from.
+    fn go_to_primary(&mut self, primary: Primary, tx: &Sender<AppEvent>) {
+        // Asking again for the item already showing changes nothing: going up
+        // a level within it is `Back`'s job, not the number key's.
+        if self.primary == primary {
             return;
         }
-        // Leaving the queue view is part of leaving the page it was opened on.
-        self.queue_view = false;
-        self.page = page;
-        // An edit in progress belongs to the page it was started on.
+        self.primary = primary;
+        self.set_section(primary.default_section(), tx);
+    }
+
+    /// Moves the secondary cursor by `delta`, clamped at the ends.
+    fn move_section(&mut self, delta: isize, tx: &Sender<AppEvent>) {
+        let sections = self.primary.sections();
+        let Some(index) = sections.iter().position(|section| *section == self.section) else {
+            return;
+        };
+        let last = sections.len().saturating_sub(1) as isize;
+        let next = (index as isize + delta).clamp(0, last) as usize;
+        if sections[next] != self.section {
+            self.set_section(sections[next], tx);
+        }
+    }
+
+    /// Chooses a secondary item, and loads whatever its list needs.
+    fn set_section(&mut self, section: Section, tx: &Sender<AppEvent>) {
+        self.section = section;
+        // An edit or a rebind belongs to the item it was started on.
         self.settings_mode = SettingsMode::Browse;
-        // The playlist that was open stays open: coming back to PLAYLIST means
-        // coming back to where the user was, not to the top of the list. Going
-        // up a level is what `Back` is for.
         self.begin_context();
         self.sync_cursor();
         self.ensure_current_page(tx);
     }
 
     fn go_back(&mut self) {
-        // Out of the innermost thing first: an edit, then the list opened from
-        // the page, then the queue, then a level of browsing.
+        // Out of the innermost thing first: an edit, then a rebind in progress,
+        // then a level of browsing. Leaving the secondary column is what `Tab`
+        // is for, not `Back`.
         if let SettingsMode::Editing(setting) = self.settings_mode {
             self.settings_mode = SettingsMode::Browse;
-            self.notify(format!(
-                "{}：{}",
-                setting.label(),
-                self.setting_value(setting)
-            ));
+            let value = self.setting_value(setting);
+            self.notify(strings::notice::setting(setting.label(), &value));
             return;
         }
-        if self.settings_mode != SettingsMode::Browse {
+        if self.settings_mode == SettingsMode::Capturing {
             self.settings_mode = SettingsMode::Browse;
-            self.sync_cursor();
-            return;
-        }
-        if self.queue_view {
-            self.queue_view = false;
-            self.sync_cursor();
             return;
         }
         // The only nesting in the browser is playlist -> tracks.
@@ -1011,7 +1060,14 @@ impl AppState {
                     self.start_track(song, tx).await;
                 }
             }
+            // Read-only: nothing is done to a track queued to play next
+            // (SPEC §17.1).
+            Pane::UpNext => {}
             Pane::Settings => self.activate_setting(),
+            Pane::Keybindings => {
+                self.settings_mode = SettingsMode::Capturing;
+                self.notify(strings::notice::BIND_PROMPT);
+            }
         }
     }
 
@@ -1109,7 +1165,7 @@ impl AppState {
             // Resolving a source needs a session, and asking without one only
             // produces a pointless request. Nothing is playing, so the pane
             // must go back to showing nothing.
-            self.notify("尚未登录，无法播放");
+            self.notify(strings::notice::NOT_SIGNED_IN);
             self.current_song = None;
             self.playback.status = PlaybackStatus::Stopped;
             return;
@@ -1174,7 +1230,7 @@ impl AppState {
     /// chosen, so the pane does not sit blank while the source is resolved.
     async fn begin_playback(&mut self, source: AudioSource) {
         let Some(player) = &self.player else {
-            self.notify("播放器不可用，无法播放");
+            self.notify(strings::notice::PLAYER_UNAVAILABLE);
             self.current_song = None;
             self.playback.status = PlaybackStatus::Stopped;
             return;
@@ -1182,7 +1238,7 @@ impl AppState {
 
         if let Err(error) = player.play(&source.url).await {
             tracing::warn!(%error, "cannot start playback");
-            self.notify(format!("播放失败：{error}"));
+            self.notify(strings::notice::playback_failed(&error.to_string()));
             self.playback.status = PlaybackStatus::Stopped;
             return;
         }
@@ -1193,7 +1249,7 @@ impl AppState {
         // The service may have served a short preview rather than the track;
         // saying so is better than letting it end early for no visible reason.
         if source.is_trial {
-            self.notify("当前账号只能试听该歌曲的片段");
+            self.notify(strings::notice::TRIAL_ONLY);
         }
         self.source = Some(source);
         self.playback.status = PlaybackStatus::Playing;
@@ -1227,16 +1283,16 @@ impl AppState {
         if self.current_song.is_none() {
             // Nothing has been chosen yet: the key starts the queue instead of
             // doing nothing at all.
-            self.notify("请先选择一首歌曲");
+            self.notify(strings::notice::SELECT_A_SONG);
             return;
         }
         let Some(player) = &self.player else {
-            self.notify("播放器不可用，无法播放");
+            self.notify(strings::notice::PLAYER_UNAVAILABLE);
             return;
         };
         if let Err(error) = player.toggle_pause().await {
             tracing::warn!(%error, "cannot toggle playback");
-            self.notify(format!("播放控制失败：{error}"));
+            self.notify(strings::notice::playback_control_failed(&error.to_string()));
         }
     }
 
@@ -1246,7 +1302,7 @@ impl AppState {
             None => {
                 // The end of the queue is the end of playback.
                 self.stop_playback().await;
-                self.notify("队列已播放完毕");
+                self.notify(strings::notice::QUEUE_ENDED);
             }
         }
     }
@@ -1254,7 +1310,7 @@ impl AppState {
     async fn skip_back(&mut self, tx: &Sender<AppEvent>) {
         match self.queue.previous() {
             Some(song) => self.start_track(song, tx).await,
-            None => self.notify("已经是队列的第一首"),
+            None => self.notify(strings::notice::QUEUE_FIRST),
         }
     }
 
@@ -1275,7 +1331,7 @@ impl AppState {
                 // The pane and the status bar now say nothing is playing; if
                 // the player disagrees, only saying so keeps the two honest.
                 tracing::warn!(%error, "cannot stop the player");
-                self.notify(format!("停止播放失败：{error}"));
+                self.notify(strings::notice::stop_failed(&error.to_string()));
             }
         }
     }
@@ -1296,11 +1352,11 @@ impl AppState {
 
     async fn move_position(&mut self, movement: Move) {
         let Some(player) = &self.player else {
-            self.notify("播放器不可用，无法跳转");
+            self.notify(strings::notice::PLAYER_UNAVAILABLE);
             return;
         };
         if self.current_song.is_none() {
-            self.notify("请先选择一首歌曲");
+            self.notify(strings::notice::SELECT_A_SONG);
             return;
         }
 
@@ -1310,7 +1366,7 @@ impl AppState {
         };
         if let Err(error) = result {
             tracing::warn!(%error, "cannot seek");
-            self.notify(format!("跳转失败：{error}"));
+            self.notify(strings::notice::seek_failed(&error.to_string()));
             return;
         }
 
@@ -1338,7 +1394,9 @@ impl AppState {
 
     fn cycle_playback_mode(&mut self) {
         self.queue.playback_mode = self.queue.playback_mode.cycle();
-        self.notify(format!("播放模式：{}", self.queue.playback_mode.label()));
+        self.notify(strings::notice::playback_mode(
+            self.queue.playback_mode.label(),
+        ));
     }
 
     /// Puts the highlighted track next in line, ahead of the rest of the queue.
@@ -1346,22 +1404,15 @@ impl AppState {
         match self.selected_song() {
             Some(song) => {
                 self.queue.push_next(song.clone());
-                self.notify(format!("已加入下一首播放：{}", song.title));
+                self.notify(strings::notice::playing_next(&song.title));
             }
-            None => self.notify("没有可加入队列的歌曲"),
+            None => self.notify(strings::notice::NOTHING_TO_QUEUE),
         }
     }
 
     // -----------------------------------------------------------------
     // Queue editing
     // -----------------------------------------------------------------
-
-    fn toggle_queue_view(&mut self) {
-        // Opening and closing are the same gesture: the queue replaces the
-        // list that is showing, and giving it back is all closing has to do.
-        self.queue_view = !self.queue_view;
-        self.sync_cursor();
-    }
 
     fn delete_from_queue(&mut self) {
         if self.pane() != Pane::Queue {
@@ -1393,52 +1444,30 @@ impl AppState {
     // -----------------------------------------------------------------
 
     /// Which setting the arrows are changing, if any.
-    ///
-    /// Only while the settings page is what is showing: the queue takes the
-    /// pane over, and an edit left open underneath it would have the arrows
-    /// changing a value the user cannot see.
     fn editing_setting(&self) -> Option<Setting> {
-        if self.queue_view {
-            return None;
-        }
         match self.settings_mode {
             SettingsMode::Editing(setting) => Some(setting),
             _ => None,
         }
     }
 
-    /// What `Enter` does on the settings page.
+    /// What `Enter` does on a settings page.
     ///
-    /// The four value rows are edited in place: `Enter` picks one up, the
-    /// arrows change it and `Enter` (or `Esc`) puts it down. Keybindings are
-    /// not a value but a list, so `Enter` goes into it instead.
+    /// The value rows are edited in place: `Enter` picks one up, the arrows
+    /// change it and `Enter` (or `Esc`) puts it down. Keybindings are not a
+    /// value but a list, so `Enter` opens a rebind there instead.
     fn activate_setting(&mut self) {
-        if matches!(
-            self.settings_mode,
-            SettingsMode::Keybindings | SettingsMode::Capturing
-        ) {
-            self.settings_mode = SettingsMode::Capturing;
-            self.notify("按下要绑定的按键，Esc 取消");
-            return;
-        }
-        let Some(setting) = Setting::at(self.selected) else {
+        let Some(setting) = self.setting_group().at(self.selected) else {
             return;
         };
-        match setting {
-            Setting::Keybindings => {
-                self.settings_mode = SettingsMode::Keybindings;
-                self.sync_cursor();
-            }
-            other => {
-                // Enter again puts the value down: one key, both ways, so
-                // there is no mode to be stuck in.
-                if self.editing_setting() == Some(other) {
-                    self.settings_mode = SettingsMode::Browse;
-                    self.notify(format!("{}：{}", other.label(), self.setting_value(other)));
-                } else {
-                    self.settings_mode = SettingsMode::Editing(other);
-                }
-            }
+        if self.editing_setting() == Some(setting) {
+            // Enter again puts the value down: one key, both ways, so there is
+            // no mode to be stuck in.
+            self.settings_mode = SettingsMode::Browse;
+            let value = self.setting_value(setting);
+            self.notify(strings::notice::setting(setting.label(), &value));
+        } else {
+            self.settings_mode = SettingsMode::Editing(setting);
         }
     }
 
@@ -1453,9 +1482,6 @@ impl AppState {
             Setting::PlaybackMode => self.queue.playback_mode.label().to_string(),
             Setting::Volume => format!("{}%", self.playback.volume),
             Setting::CoverSize => self.config.cover_size.name().to_string(),
-            // Not a value but a list of keys, and it is never edited in place,
-            // so nothing ever asks for its value.
-            Setting::Keybindings => String::new(),
         }
     }
 
@@ -1500,8 +1526,6 @@ impl AppState {
                     self.persist_config();
                 }
             }
-            // A list, not a value: the arrows move within it as usual.
-            Setting::Keybindings => {}
         }
     }
 
@@ -1513,13 +1537,13 @@ impl AppState {
     /// how a user ends up with a binding they never made (§25).
     fn capture_binding(&mut self, key: crossterm::event::KeyEvent) {
         if key.code == crossterm::event::KeyCode::Esc {
-            self.settings_mode = SettingsMode::Keybindings;
-            self.notify("已取消改键");
+            self.settings_mode = SettingsMode::Browse;
+            self.notify(strings::notice::BIND_CANCELLED);
             return;
         }
 
         let Some(action) = Action::ALL.get(self.selected).copied() else {
-            self.settings_mode = SettingsMode::Keybindings;
+            self.settings_mode = SettingsMode::Browse;
             return;
         };
 
@@ -1529,20 +1553,20 @@ impl AppState {
         let Some(key) = niveus_ui::to_key(key) else {
             // Alt combinations and media keys are not in the vocabulary; the
             // editor stays open so the user can simply press another key.
-            self.notify("这个按键无法绑定，请换一个");
+            self.notify(strings::notice::BIND_INVALID);
             return;
         };
 
         match self.config.keymap.rebind(action, key) {
             Ok(()) => {
-                self.settings_mode = SettingsMode::Keybindings;
-                self.notify(format!("{} 已绑定到 {}", action.name(), key.label()));
+                self.settings_mode = SettingsMode::Browse;
+                self.notify(strings::notice::bound(action.name(), &key.label()));
                 // Written down only now, when the map is known to be valid.
                 self.persist_config();
             }
             Err(error) => {
-                self.settings_mode = SettingsMode::Keybindings;
-                self.notify(format!("无法绑定：{error}"));
+                self.settings_mode = SettingsMode::Browse;
+                self.notify(strings::notice::bind_failed(&error.to_string()));
             }
         }
     }
@@ -1554,7 +1578,7 @@ impl AppState {
             Ok(()) => tracing::info!(path = %path.display(), "preferences saved"),
             Err(error) => {
                 tracing::warn!(path = %path.display(), %error, "cannot save preferences");
-                self.notify("设置无法保存，下次启动会恢复原值");
+                self.notify(strings::notice::CONFIG_SAVE_FAILED);
             }
         }
     }
@@ -1734,7 +1758,7 @@ impl AppState {
             // out of the speakers and nothing would ever correct it.
             tracing::warn!(%error, "cannot set the volume");
             self.playback.volume = previous;
-            self.notify(format!("音量调整失败：{error}"));
+            self.notify(strings::notice::volume_failed(&error.to_string()));
         }
     }
 
@@ -1803,7 +1827,9 @@ impl AppState {
                     }
                     Err(error) => {
                         tracing::warn!(%error, "session check failed");
-                        self.login = LoginPhase::Failed(format!("无法校验登录状态：{error}"));
+                        self.login = LoginPhase::Failed(strings::notice::session_check_failed(
+                            &error.to_string(),
+                        ));
                     }
                 }
             }
@@ -1818,12 +1844,16 @@ impl AppState {
                         }
                         Err(error) => {
                             tracing::warn!(%error, "cannot render QR code");
-                            self.login = LoginPhase::Failed(format!("无法生成二维码：{error}"));
+                            self.login = LoginPhase::Failed(strings::notice::qr_encode_failed(
+                                &error.to_string(),
+                            ));
                         }
                     },
                     Err(error) => {
                         tracing::warn!(%error, "cannot obtain QR code");
-                        self.login = LoginPhase::Failed(format!("无法获取二维码：{error}"));
+                        self.login = LoginPhase::Failed(strings::notice::qr_fetch_failed(
+                            &error.to_string(),
+                        ));
                     }
                 }
             }
@@ -1844,7 +1874,8 @@ impl AppState {
                 }
                 Err(error) => {
                     tracing::warn!(%error, "QR poll failed");
-                    self.login = LoginPhase::Failed(format!("扫码失败：{error}"));
+                    self.login =
+                        LoginPhase::Failed(strings::notice::qr_scan_failed(&error.to_string()));
                 }
             },
             AppEvent::QrConfirmed(result) => {
@@ -1853,7 +1884,9 @@ impl AppState {
                     Ok(user) => self.sign_in(user, tx),
                     Err(error) => {
                         tracing::warn!(%error, "sign-in could not be confirmed");
-                        self.login = LoginPhase::Failed(format!("登录确认失败：{error}"));
+                        self.login = LoginPhase::Failed(strings::notice::sign_in_confirm_failed(
+                            &error.to_string(),
+                        ));
                     }
                 }
             }
@@ -1866,7 +1899,7 @@ impl AppState {
                         // coming back to a playlist that cannot be found would
                         // be a puzzle rather than a position.
                         self.pending_playlist = None;
-                        self.report_browse_failure("加载歌单失败", error, tx)
+                        self.report_browse_failure(strings::notice::PLAYLISTS_FAILED, error, tx)
                     }
                 }
             }
@@ -1894,7 +1927,9 @@ impl AppState {
                         // The remembered position may now be past the end.
                         self.clamp_selection();
                     }
-                    Err(error) => self.report_browse_failure("加载歌曲失败", error, tx),
+                    Err(error) => {
+                        self.report_browse_failure(strings::notice::SONGS_FAILED, error, tx)
+                    }
                 }
             }
             AppEvent::Likes(result) => {
@@ -1907,7 +1942,9 @@ impl AppState {
                         // now be past the end.
                         self.clamp_if_showing(Pane::Likes);
                     }
-                    Err(error) => self.report_browse_failure("加载喜欢的歌曲失败", error, tx),
+                    Err(error) => {
+                        self.report_browse_failure(strings::notice::LIKES_FAILED, error, tx)
+                    }
                 }
             }
             AppEvent::SongUrl {
@@ -1929,7 +1966,10 @@ impl AppState {
                     Ok(source) => self.begin_playback(source).await,
                     Err(error) => {
                         tracing::warn!(%error, "cannot resolve an audio source");
-                        self.notify(format!("无法播放《{}》：{error}", song.title));
+                        self.notify(strings::notice::cannot_play(
+                            &song.title,
+                            &error.to_string(),
+                        ));
                         // Nothing is playing, so the pane must not keep showing
                         // the track as if it were.
                         self.current_song = None;
@@ -2095,18 +2135,18 @@ impl AppState {
         self.player_restarts = if quick { self.player_restarts + 1 } else { 0 };
         if self.player_restarts >= MAX_PLAYER_RESTARTS {
             tracing::error!(restarts = self.player_restarts, "the player keeps exiting");
-            self.notify("播放器反复退出，播放功能已停用；重启 Niveus 可恢复");
+            self.notify(strings::notice::PLAYER_DEAD);
             return;
         }
 
         match self.launch_player(tx).await {
             Ok(()) => {
                 tracing::info!("player restarted");
-                self.notify("播放器已退出，已重新启动；按 Space 继续播放");
+                self.notify(strings::notice::PLAYER_RESTARTED);
             }
             Err(error) => {
                 tracing::error!(%error, "cannot restart the player");
-                self.notify(format!("播放器已退出，无法重新启动：{error}"));
+                self.notify(strings::notice::player_restart_failed(&error.to_string()));
             }
         }
     }
@@ -2142,7 +2182,7 @@ impl AppState {
             PlayerEvent::Failed(message) => {
                 tracing::warn!(%message, "playback failed");
                 self.playback.status = PlaybackStatus::Stopped;
-                self.notify(format!("播放失败：{message}"));
+                self.notify(strings::notice::playback_failed(&message));
             }
             PlayerEvent::Position(seconds) => {
                 if let Some(ms) = seconds_to_ms(seconds) {
@@ -2238,7 +2278,7 @@ impl AppState {
                     playlist = pending.get(),
                     "the playlist from last time is gone"
                 );
-                self.notify("上次浏览的歌单已不存在");
+                self.notify(strings::notice::PLAYLIST_GONE);
             }
         }
     }
@@ -2260,7 +2300,7 @@ impl AppState {
     fn report_browse_failure(&mut self, what: &str, error: ProviderError, tx: &Sender<AppEvent>) {
         tracing::warn!(%error, "{what}");
         if !error.is_authentication() {
-            self.notify(format!("{what}：{error}"));
+            self.notify(strings::notice::browse_failed(what, &error.to_string()));
             return;
         }
 
@@ -2269,7 +2309,7 @@ impl AppState {
         // sign-in screen sits on "正在获取二维码…" for ever and the only way
         // out is to restart the program.
         self.user = None;
-        self.notify("登录已过期，请重新扫码");
+        self.notify(strings::notice::SESSION_EXPIRED);
         self.begin_context();
         self.request_qr(tx);
     }
@@ -2402,13 +2442,13 @@ mod tests {
         assert_eq!(state.selected, 30);
 
         // Off to another page, and to another playlist, and back again.
-        state.go_to_page(Page::Favorites, &tx);
+        state.set_section(Section::Liked, &tx);
         assert_ne!(
             state.selected, 30,
             "the favourites list kept the playlist's cursor"
         );
 
-        state.go_to_page(Page::Playlist, &tx);
+        state.set_section(Section::Playlists, &tx);
         assert_eq!(
             state.opened_playlist.as_ref().map(|p| p.id),
             Some(first.id),
@@ -2453,27 +2493,26 @@ mod tests {
         assert_eq!(state.selected, 3);
     }
 
-    #[test]
-    fn the_queue_view_remembers_where_the_cursor_was() {
-        // Opening the queue puts the cursor at its own top, not wherever the
-        // list underneath happened to be; closing it puts the cursor back.
+    #[tokio::test]
+    async fn the_queue_item_remembers_where_the_cursor_was() {
+        // Going to QUEUE puts the cursor at its own top, not wherever the list
+        // underneath happened to be; leaving puts the cursor back.
         let mut state = test_state();
+        let tx = channel();
         state.queue.replace_items((1..=5).map(song).collect());
         state.created = (1..=9)
             .map(|id| playlist(id, PlaylistKind::Created))
             .collect();
 
         state.selected = 3;
-        state.toggle_queue_view();
-        assert!(state.queue_view);
+        state.go_to_primary(Primary::Queue, &tx);
         assert_eq!(state.selected, 0, "the queue opened on the list's cursor");
 
         state.selected = 2;
-        state.toggle_queue_view();
-        assert!(!state.queue_view);
+        state.go_to_primary(Primary::Library, &tx);
         assert_eq!(state.selected, 3, "the list did not remember its cursor");
 
-        state.toggle_queue_view();
+        state.go_to_primary(Primary::Queue, &tx);
         assert_eq!(state.selected, 2, "the queue did not remember its cursor");
     }
 
@@ -2488,8 +2527,8 @@ mod tests {
         state.songs = (1..=20).map(song).collect();
         state.selected = 15;
 
-        state.go_to_page(Page::Settings, &tx);
-        state.go_to_page(Page::Playlist, &tx);
+        state.go_to_primary(Primary::Settings, &tx);
+        state.go_to_primary(Primary::Library, &tx);
         // The playlist comes back shorter than when it was left.
         state.songs = (1..=3).map(song).collect();
         state.clamp_selection();
@@ -2671,7 +2710,7 @@ mod tests {
         assert!(state
             .notice
             .as_ref()
-            .is_some_and(|n| n.text.contains("登录已过期")));
+            .is_some_and(|n| n.text.contains("expired")));
         // Saying "请重新扫码" is not enough on its own: a code has to be asked
         // for, or the sign-in screen promises one that never arrives and the
         // only way out is to restart the program.
@@ -2724,7 +2763,7 @@ mod tests {
         assert!(state
             .notice
             .as_ref()
-            .is_some_and(|notice| notice.text.contains("播放器")));
+            .is_some_and(|notice| notice.text.contains("player")));
 
         // Next moves the queue on, exactly as the `n` key does.
         state
@@ -2798,7 +2837,7 @@ mod tests {
         assert!(state
             .notice
             .as_ref()
-            .is_some_and(|notice| notice.text.contains("音量调整失败")));
+            .is_some_and(|notice| notice.text.contains("volume")));
     }
 
     // ---- queue view ------------------------------------------------------
@@ -2807,30 +2846,33 @@ mod tests {
     fn queued(count: u64) -> AppState {
         let mut state = test_state();
         state.queue.replace_items((1..=count).map(song).collect());
-        state.queue_view = true;
+        state.primary = Primary::Queue;
+        state.section = Section::Current;
         state
     }
 
-    #[test]
-    fn the_queue_view_replaces_the_list_and_gives_it_back() {
+    #[tokio::test]
+    async fn the_queue_item_replaces_the_list_and_gives_it_back() {
         let mut state = queued(3);
+        let tx = channel();
         assert!(matches!(state.list_view(), ListView::Queue { .. }));
 
-        state.toggle_queue_view();
+        state.go_to_primary(Primary::Library, &tx);
         assert!(matches!(state.list_view(), ListView::Playlists { .. }));
     }
 
     #[tokio::test]
-    async fn leaving_the_page_closes_the_queue_view() {
-        let mut state = test_state();
-        state.queue_view = true;
-        state.go_back();
-        assert!(!state.queue_view, "escape did not close the queue");
-
-        state.queue_view = true;
+    async fn switching_away_from_the_queue_returns_to_the_library() {
+        // The queue is a first-level item now, so leaving it is a navigation
+        // like any other, not a view being closed (SPEC §17.1).
+        let mut state = queued(3);
         let tx = channel();
-        state.go_to_page(Page::Favorites, &tx);
-        assert!(!state.queue_view, "changing page left the queue open");
+        state.go_to_primary(Primary::Library, &tx);
+        assert!(matches!(state.list_view(), ListView::Playlists { .. }));
+
+        // And stepping between library sections works the same way.
+        state.set_section(Section::Liked, &tx);
+        assert!(matches!(state.list_view(), ListView::Likes { .. }));
     }
 
     #[test]
@@ -2886,7 +2928,7 @@ mod tests {
             id: niveus_music_core::UserId(1),
             name: "listener".into(),
         });
-        state.go_to_page(Page::Settings, &channel());
+        state.go_to_primary(Primary::Settings, &channel());
         state
     }
 
@@ -2898,9 +2940,20 @@ mod tests {
         dir
     }
 
-    /// Moves the cursor onto a setting.
+    /// Moves the cursor onto a setting, the way a user would: choose the group
+    /// it belongs to, then the row within it.
     fn point_at(state: &mut AppState, setting: Setting) {
-        state.selected = Setting::index_of(setting);
+        let group = SettingGroup::of(setting);
+        let section = match group {
+            SettingGroup::Playback => Section::Playback,
+            SettingGroup::Appearance => Section::Appearance,
+        };
+        state.set_section(section, &channel());
+        state.selected = group
+            .settings()
+            .iter()
+            .position(|candidate| *candidate == setting)
+            .expect("the group lists the setting");
     }
 
     #[tokio::test]
@@ -2916,7 +2969,9 @@ mod tests {
         // The arrows change it while it is held, rather than moving the cursor.
         state.handle_action(Action::MoveDown, &tx).await;
         assert_eq!(state.config.cover_size, CoverSize::Large);
-        assert_eq!(state.selected, Setting::index_of(Setting::CoverSize));
+        // The cursor stays where it was: the arrows changed a value, they did
+        // not move the selection.
+        assert_eq!(state.selected, 0);
 
         // Put down.
         state.handle_action(Action::Select, &tx).await;
@@ -2926,9 +2981,14 @@ mod tests {
             .as_ref()
             .is_some_and(|notice| notice.text.contains("COVER SIZE")));
 
-        // And now the arrows move the cursor again.
+        // And now the arrows move the cursor again: alone in its group the
+        // cover-size row stays put, and in a group with room it moves.
         state.handle_action(Action::MoveUp, &tx).await;
-        assert_eq!(state.selected, Setting::index_of(Setting::Volume));
+        assert_eq!(state.selected, 0);
+        state.set_section(Section::Playback, &channel());
+        state.selected = 0;
+        state.handle_action(Action::MoveDown, &tx).await;
+        assert_eq!(state.selected, 1);
 
         std::fs::remove_dir_all(state.paths.config_dir().parent().unwrap()).unwrap();
     }
@@ -3055,8 +3115,7 @@ mod tests {
         state.size = (80, 24);
         let tx = channel();
 
-        state.selected = Setting::index_of(Setting::Keybindings);
-        state.handle_action(Action::Select, &tx).await;
+        state.set_section(Section::Keybindings, &tx);
         for _ in 0..Action::ALL.len() - 1 {
             state.handle_action(Action::MoveDown, &tx).await;
         }
@@ -3083,9 +3142,8 @@ mod tests {
         let mut state = settings_page("rebind");
         let tx = channel();
 
-        state.selected = Setting::index_of(Setting::Keybindings);
-        state.handle_action(Action::Select, &tx).await;
-        assert_eq!(state.settings_mode, SettingsMode::Keybindings);
+        state.set_section(Section::Keybindings, &tx);
+        assert_eq!(state.settings_mode, SettingsMode::Browse);
         assert!(matches!(state.list_view(), ListView::Keybindings { .. }));
 
         // The cursor is the binding list's own, so it starts where that list
@@ -3109,8 +3167,8 @@ mod tests {
         );
         assert_eq!(
             state.settings_mode,
-            SettingsMode::Keybindings,
-            "still capturing"
+            SettingsMode::Browse,
+            "the rebind finished but the capture did not"
         );
 
         // Written down only now, and readable back.
@@ -3132,12 +3190,11 @@ mod tests {
         let mut state = settings_page("conflict");
         let tx = channel();
 
-        state.selected = Setting::index_of(Setting::Keybindings);
-        state.handle_action(Action::Select, &tx).await;
+        state.set_section(Section::Keybindings, &tx);
         state.selected = Action::ALL.iter().position(|a| *a == Action::Quit).unwrap();
         state.handle_action(Action::Select, &tx).await;
 
-        // `1` belongs to the playlist page.
+        // `1` belongs to the library item.
         state
             .handle_event(
                 AppEvent::Key(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE)),
@@ -3150,14 +3207,14 @@ mod tests {
             Some(Key::Char('q'))
         );
         assert_eq!(
-            state.config.keymap.key_for(Action::ShowPlaylist),
+            state.config.keymap.key_for(Action::ShowLibrary),
             Some(Key::Char('1')),
             "the key was taken from the action that held it"
         );
         assert!(state
             .notice
             .as_ref()
-            .is_some_and(|notice| notice.text.contains("无法绑定")));
+            .is_some_and(|notice| notice.text.contains("bind")));
         assert!(
             !state.paths.config_file().exists(),
             "a refused change was written"
@@ -3173,8 +3230,7 @@ mod tests {
         // every other key is being swallowed as a potential binding.
         let mut state = settings_page("ctrl-c");
         let tx = channel();
-        state.selected = Setting::index_of(Setting::Keybindings);
-        state.handle_action(Action::Select, &tx).await;
+        state.set_section(Section::Keybindings, &tx);
         state.selected = 0;
         state.handle_action(Action::Select, &tx).await;
         assert_eq!(state.settings_mode, SettingsMode::Capturing);
@@ -3203,8 +3259,7 @@ mod tests {
     async fn escape_abandons_a_rebind() {
         let mut state = settings_page("escape");
         let tx = channel();
-        state.selected = Setting::index_of(Setting::Keybindings);
-        state.handle_action(Action::Select, &tx).await;
+        state.set_section(Section::Keybindings, &tx);
         state.selected = 0;
         state.handle_action(Action::Select, &tx).await;
 
@@ -3215,7 +3270,7 @@ mod tests {
             )
             .await;
 
-        assert_eq!(state.settings_mode, SettingsMode::Keybindings);
+        assert_eq!(state.settings_mode, SettingsMode::Browse);
         assert_eq!(
             state.config.keymap,
             Keymap::default(),
@@ -3235,7 +3290,7 @@ mod tests {
         state.handle_action(Action::Select, &tx).await;
         assert!(state.editing_setting().is_some());
 
-        state.handle_action(Action::ShowFavorites, &tx).await;
+        state.handle_action(Action::ShowLibrary, &tx).await;
         assert_eq!(state.editing_setting(), None);
 
         // And the arrows move the cursor there, as they always did.
@@ -3248,7 +3303,8 @@ mod tests {
     #[test]
     fn deleting_works_only_in_the_queue_view() {
         let mut state = queued(3);
-        state.queue_view = false;
+        state.primary = Primary::Library;
+        state.section = Section::Playlists;
         state.delete_from_queue();
         assert_eq!(state.queue.items.len(), 3, "a browse list was edited");
     }
@@ -3284,7 +3340,6 @@ mod tests {
     async fn choosing_a_track_makes_its_list_the_queue() {
         let mut state = signed_in();
         state.songs = (11..=13).map(song).collect();
-        state.page = Page::Playlist;
         state.opened_playlist = Some(playlist(7, PlaylistKind::Created));
         state.selected = 1;
 
@@ -3470,7 +3525,7 @@ mod tests {
         assert!(state
             .notice
             .as_ref()
-            .is_some_and(|notice| notice.text.contains("播放完毕")));
+            .is_some_and(|notice| notice.text.contains("finished")));
     }
 
     #[tokio::test]
@@ -3619,7 +3674,8 @@ mod tests {
         let mut state = signed_in();
         state.queue.replace_items((1..=3).map(song).collect());
         state.queue.select(0);
-        state.queue_view = true;
+        state.primary = Primary::Queue;
+        state.section = Section::Current;
         state.selected = 2;
 
         let tx = channel();
@@ -3630,7 +3686,7 @@ mod tests {
         assert!(state
             .notice
             .as_ref()
-            .is_some_and(|notice| notice.text.contains("已加入下一首")));
+            .is_some_and(|notice| notice.text.contains("Playing next")));
     }
 
     #[tokio::test]
@@ -3644,7 +3700,7 @@ mod tests {
         assert!(state
             .notice
             .as_ref()
-            .is_some_and(|notice| notice.text.contains("播放器")));
+            .is_some_and(|notice| notice.text.contains("player")));
     }
 
     // ---- lyrics -----------------------------------------------------------
@@ -3737,7 +3793,7 @@ mod tests {
         let mut state = awaiting_lyrics();
         deliver_lyrics(&mut state, 1, Ok(RawLyrics::original(LRC))).await;
 
-        // 120×40: a 36-row pane, a 12-row cover and a 15-row panel, so the
+        // 140×40: a 36-row pane, a 12-row cover and a 15-row panel, so the
         // window is the largest 4k+1 that fits — 13 rows, which is seven lines.
         assert_eq!(state.lyric_rows(), 15);
         assert_eq!(window_of(&state).len(), 7);
@@ -3754,7 +3810,7 @@ mod tests {
 
         // A shorter terminal leaves less of a panel, and a smaller window.
         state.metadata = false;
-        state.size = (120, 32);
+        state.size = (140, 32);
         assert_eq!(window_of(&state).len(), 5, "ten rows hold five lines");
     }
 
@@ -3886,9 +3942,12 @@ mod tests {
     // ---- album art --------------------------------------------------------
 
     /// A state with a session, a roomy terminal and a track showing.
+    ///
+    /// 140 columns is the narrowest Standard terminal: the now-playing pane
+    /// only exists from 130 (§22).
     fn showing_a_track() -> AppState {
         let mut state = signed_in();
-        state.size = (120, 40);
+        state.size = (140, 40);
         state.current_song = Some(song(1));
         state
     }
@@ -4178,7 +4237,7 @@ mod tests {
         state.history.record(song(1), 1_700_000_000);
         state.history.record(song(2), 1_700_000_100);
 
-        state.go_to_page(Page::History, &channel());
+        state.set_section(Section::History, &channel());
         let ListView::History { entries, .. } = state.list_view() else {
             panic!("the history page is not showing its record")
         };
@@ -4201,7 +4260,7 @@ mod tests {
     #[tokio::test]
     async fn an_empty_history_page_says_so_rather_than_showing_another_list() {
         let mut state = signed_in();
-        state.go_to_page(Page::History, &channel());
+        state.set_section(Section::History, &channel());
         assert!(
             matches!(state.list_view(), ListView::History { entries, .. } if entries.is_empty())
         );
@@ -4417,7 +4476,7 @@ mod tests {
         assert!(state
             .notice
             .as_ref()
-            .is_some_and(|notice| notice.text.contains("上次浏览的歌单")));
+            .is_some_and(|notice| notice.text.contains("last time")));
     }
 
     #[tokio::test]
@@ -4430,7 +4489,9 @@ mod tests {
 
         let (saved, error) = StateFile::load(&state.paths.state_file());
         assert!(error.is_some());
-        state.warn(format!("无法恢复上次的状态：{}", error.unwrap()));
+        state.warn(strings::notice::state_restore_failed(
+            &error.unwrap().to_string(),
+        ));
         state.restore(saved);
 
         assert_eq!(state.playback.volume, 72, "the volume fell to silence");

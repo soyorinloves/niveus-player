@@ -50,7 +50,7 @@ impl NcmApiClient {
         let key: QrKeyDto = Self::decode("login_qr_key", response.body)?;
         if key.unikey.trim().is_empty() {
             return Err(ApiError::InvalidResponse(
-                "登录接口未返回二维码 key".to_string(),
+                "the login endpoint returned no QR key".to_string(),
             ));
         }
 
@@ -86,14 +86,14 @@ impl NcmApiClient {
             803 => {
                 if !self.has_session() {
                     return Err(ApiError::InvalidResponse(
-                        "扫码已确认，但未收到登录 cookie".to_string(),
+                        "the scan was confirmed but no login cookie arrived".to_string(),
                     ));
                 }
                 Ok(QrLoginState::Confirmed)
             }
             800 | QR_CHECK_INVALID => Ok(QrLoginState::Expired),
             other => Err(ApiError::InvalidResponse(format!(
-                "未知的扫码状态码 {other}"
+                "unknown scan status code {other}"
             ))),
         }
     }

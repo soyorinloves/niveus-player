@@ -131,7 +131,9 @@ impl NcmProvider {
         // means it does not recognise the session rather than that anything
         // went wrong on the wire. Saying so points at the right thing.
         Err(last_error.unwrap_or_else(|| {
-            ProviderError::MissingResource("服务端未确认本次登录，请重新扫码".to_string())
+            ProviderError::MissingResource(
+                "the service did not confirm this sign-in; scan again".to_string(),
+            )
         }))
     }
 
@@ -139,7 +141,7 @@ impl NcmProvider {
     fn signed_in(&self) -> Result<User> {
         self.user().ok_or_else(|| {
             ProviderError::Api(crate::error::ApiFailure::Authentication(
-                "尚未登录".to_string(),
+                "not signed in".to_string(),
             ))
         })
     }
@@ -203,7 +205,7 @@ impl crate::MusicProvider for NcmProvider {
         {
             Some(dto) => mapping::map_audio_source(dto),
             None => Err(ProviderError::MissingResource(format!(
-                "该歌曲暂不可播放 (id={})",
+                "this track cannot be played (id={})",
                 song_id.get()
             ))),
         }

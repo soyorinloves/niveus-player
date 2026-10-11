@@ -347,7 +347,7 @@ async fn a_failed_track_says_why() {
     let PlayerEvent::Failed(explanation) = event else {
         panic!("a failed track was not reported as such: {event:?}")
     };
-    assert!(explanation.contains("无法打开"), "{explanation}");
+    assert!(explanation.contains("cannot open"), "{explanation}");
 }
 
 #[tokio::test]

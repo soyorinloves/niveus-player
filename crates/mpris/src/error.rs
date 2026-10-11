@@ -2,10 +2,10 @@
 
 #[derive(Debug, thiserror::Error)]
 pub enum MprisError {
-    #[error("无法连接 D-Bus 会话总线：{0}")]
+    #[error("cannot connect to the D-Bus session bus: {0}")]
     Connect(#[source] zbus::Error),
-    #[error("无法注册 MPRIS 服务名：{0}")]
+    #[error("cannot register the MPRIS service name: {0}")]
     Name(#[source] zbus::Error),
-    #[error("无法发布 MPRIS 接口：{0}")]
+    #[error("cannot publish the MPRIS interface: {0}")]
     Serve(#[source] zbus::Error),
 }

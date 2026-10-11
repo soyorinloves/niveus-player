@@ -8,6 +8,7 @@
 use super::{line_of, truncate};
 use crate::qr::QrGrid;
 use crate::state::{LoginView, SessionView, UiState};
+use crate::strings;
 use crate::theme::Theme;
 use niveus_config::Action;
 use ratatui::layout::Rect;
@@ -53,15 +54,12 @@ fn compose(
     }
 
     vec![
-        Line::from(Span::styled("扫码登录", theme.heading)),
+        Line::from(Span::styled(strings::login::HEADING, theme.heading)),
+        Line::default(),
+        Line::from(Span::styled(strings::login::TOO_SMALL, theme.error)),
         Line::default(),
         Line::from(Span::styled(
-            "终端太小，无法完整显示二维码，请放大窗口",
-            theme.error,
-        )),
-        Line::default(),
-        Line::from(Span::styled(
-            format!("{} 退出", state.hint(Action::Quit)),
+            strings::login::quit(&state.hint(Action::Quit)),
             theme.muted,
         )),
     ]
@@ -79,25 +77,31 @@ fn build(
     // page does not offer a code that has not been asked for.
     if let LoginView::Checking = login {
         let mut lines = vec![
-            Line::from(Span::styled("登录", theme.heading)),
+            Line::from(Span::styled(strings::login::HEADING, theme.heading)),
             Line::default(),
         ];
-        lines.push(Line::from(Span::styled("正在检查登录状态…", theme.muted)));
+        lines.push(Line::from(Span::styled(
+            strings::login::CHECKING,
+            theme.muted,
+        )));
         if hint {
             lines.push(Line::default());
             lines.push(Line::from(Span::styled(
-                format!("{} 退出", state.hint(Action::Quit)),
+                strings::login::quit(&state.hint(Action::Quit)),
                 theme.muted,
             )));
         }
         return lines;
     }
 
-    let mut lines = vec![Line::from(Span::styled("扫码登录", theme.heading))];
+    let mut lines = vec![Line::from(Span::styled(
+        strings::login::HEADING,
+        theme.heading,
+    ))];
 
     if instruction {
         lines.push(Line::from(Span::styled(
-            "用网易云音乐 App 扫描二维码",
+            strings::login::INSTRUCTION,
             theme.muted,
         )));
     }
@@ -107,15 +111,18 @@ fn build(
         LoginView::Checking => {}
         LoginView::Starting => {
             lines.push(Line::default());
-            lines.push(Line::from(Span::styled("正在获取二维码…", theme.muted)));
+            lines.push(Line::from(Span::styled(
+                strings::login::STARTING,
+                theme.muted,
+            )));
         }
         LoginView::Waiting { grid, scanned } => {
             lines.extend(grid_lines(grid));
             lines.push(Line::from(Span::styled(
                 if *scanned {
-                    "已扫码，请在手机上确认"
+                    strings::login::SCANNED
                 } else {
-                    "等待扫码…"
+                    strings::login::WAITING
                 },
                 if *scanned { theme.accent } else { theme.muted },
             )));
@@ -129,7 +136,7 @@ fn build(
     if hint {
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(
-            format!("{} 退出", state.hint(Action::Quit)),
+            strings::login::quit(&state.hint(Action::Quit)),
             theme.muted,
         )));
     }
@@ -184,7 +191,7 @@ mod tests {
     use super::*;
     use crate::layout::LayoutTier;
     use crate::render::render;
-    use crate::state::{ListView, LyricsView, NowPlayingView, Page, StatusView};
+    use crate::state::{Focus, ListView, LyricsView, NowPlayingView, Primary, Section, StatusView};
     use niveus_config::{CoverSize, Keymap};
     use niveus_music_core::{PlaybackMode, PlaybackStatus};
     use ratatui::backend::TestBackend;
@@ -196,7 +203,9 @@ mod tests {
 
     fn state<'a>(login: LoginView<'a>, keymap: &'a Keymap) -> UiState<'a> {
         UiState {
-            page: Page::Playlist,
+            primary: Primary::Library,
+            section: Section::Playlists,
+            focus: Focus::Main,
             session: SessionView::Login(login),
             list: ListView::Message(""),
             now_playing: NowPlayingView {
@@ -266,9 +275,10 @@ mod tests {
         let buffer = draw(LoginView::Checking, area);
         let text = compact(&text_of(&buffer, area));
 
-        assert!(text.contains("正在检查登录状态"), "{text}");
-        assert!(!text.contains("二维码"), "{text}");
-        assert!(!text.contains("扫码登录"), "{text}");
+        assert!(text.contains("Checkingyoursession"), "{text}");
+        // Nothing about a code that has not been asked for.
+        assert!(!text.contains("QR"), "{text}");
+        assert!(!text.contains("Scan"), "{text}");
     }
 
     #[test]
@@ -314,8 +324,8 @@ mod tests {
             ),
             area,
         ));
-        assert!(text.contains("扫码登录"), "{text}");
-        assert!(text.contains("等待扫码…"), "{text}");
+        assert!(text.contains("SIGNIN"), "{text}");
+        assert!(text.contains("Waitingforscan"), "{text}");
 
         let text = compact(&text_of(
             &draw(
@@ -327,7 +337,7 @@ mod tests {
             ),
             area,
         ));
-        assert!(text.contains("已扫码，请在手机上确认"), "{text}");
+        assert!(text.contains("Scanned"), "{text}");
     }
 
     #[test]
@@ -336,21 +346,21 @@ mod tests {
         let text = compact(&text_of(
             &draw(
                 LoginView::Failed {
-                    message: "网络请求失败",
+                    message: "Network request failed",
                 },
                 area,
             ),
             area,
         ));
-        assert!(text.contains("网络请求失败"), "{text}");
-        assert!(text.contains("[Q]退出"), "{text}");
+        assert!(text.contains("Networkrequestfailed"), "{text}");
+        assert!(text.contains("[Q]Quit"), "{text}");
     }
 
     #[test]
     fn the_starting_state_says_what_is_happening() {
         let area = Rect::new(0, 0, 120, 40);
         let text = compact(&text_of(&draw(LoginView::Starting, area), area));
-        assert!(text.contains("正在获取二维码…"), "{text}");
+        assert!(text.contains("RequestingaQRcode"), "{text}");
     }
 
     #[test]
@@ -467,7 +477,7 @@ mod tests {
             &crate::theme::Theme::default(),
         );
         let text = lines_text(&lines);
-        assert!(text.contains("终端太小"), "{text}");
+        assert!(text.contains("Terminal too small"), "{text}");
         assert!(
             !text.contains(HALF_BLOCK),
             "a clipped code was drawn anyway"

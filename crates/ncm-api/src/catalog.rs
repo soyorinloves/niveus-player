@@ -150,11 +150,9 @@ impl NcmApiClient {
         self.record(&response);
 
         let parsed: SongUrlList = Self::decode("song_url_v1", response.body)?;
-        let entry = parsed
-            .data
-            .into_iter()
-            .next()
-            .ok_or_else(|| ApiError::InvalidResponse("song_url_v1: 未返回音源".to_string()))?;
+        let entry = parsed.data.into_iter().next().ok_or_else(|| {
+            ApiError::InvalidResponse("song_url_v1 returned no audio source".to_string())
+        })?;
 
         if entry.url.as_deref().unwrap_or("").trim().is_empty() {
             tracing::debug!(

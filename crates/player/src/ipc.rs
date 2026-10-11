@@ -110,7 +110,7 @@ where
                                 );
                                 for (_, reply) in abandoned {
                                     let _ = reply.send(Err(PlayerError::IpcProtocol(
-                                        "播放器长时间未回应".to_string(),
+                                        "the player did not respond for a long time".to_string(),
                                     )));
                                 }
                             }
@@ -173,7 +173,9 @@ fn verdict(message: &Value) -> Result<(), PlayerError> {
     match message.get("error").and_then(Value::as_str) {
         Some("success") => Ok(()),
         Some(other) => Err(PlayerError::Rejected(other.to_string())),
-        None => Err(PlayerError::IpcProtocol("回执缺少 error 字段".to_string())),
+        None => Err(PlayerError::IpcProtocol(
+            "the reply has no error field".to_string(),
+        )),
     }
 }
 
@@ -222,11 +224,16 @@ fn explain(message: &Value) -> String {
         .unwrap_or_default();
 
     match raw {
-        "" => "无法播放该文件".to_string(),
+        "" => "cannot play this file".to_string(),
         // The usual causes, in the order a listener is likely to meet them.
-        "Failed to open file" => "无法打开音频文件，可能已过期或无权限".to_string(),
-        "loading failed" => "音源加载失败，可能网络不通或该曲目受限".to_string(),
-        "unrecognized file format" => "音频格式无法识别".to_string(),
+        "Failed to open file" => {
+            "cannot open the audio file; it may have expired or be unreadable".to_string()
+        }
+        "loading failed" => {
+            "the audio source failed to load; the network may be down or the track restricted"
+                .to_string()
+        }
+        "unrecognized file format" => "unrecognized audio format".to_string(),
         _ => raw.to_string(),
     }
 }
@@ -256,7 +263,9 @@ pub(crate) async fn request(
     match tokio::time::timeout(REPLY_TIMEOUT, answer).await {
         Ok(Ok(result)) => result,
         Ok(Err(_)) => Err(PlayerError::Closed),
-        Err(_) => Err(PlayerError::IpcProtocol("播放器未在超时内回应".to_string())),
+        Err(_) => Err(PlayerError::IpcProtocol(
+            "the player did not reply within the timeout".to_string(),
+        )),
     }
 }
 
@@ -297,7 +306,7 @@ mod tests {
         let Some(PlayerEvent::Failed(explanation)) = parse_event(&message) else {
             panic!("a failed file was not reported")
         };
-        assert!(explanation.contains("无法打开"), "{explanation}");
+        assert!(explanation.contains("cannot open"), "{explanation}");
     }
 
     #[test]
@@ -317,7 +326,7 @@ mod tests {
         let message = json!({ "event": "end-file", "reason": "error" });
         assert_eq!(
             parse_event(&message),
-            Some(PlayerEvent::Failed("无法播放该文件".to_string()))
+            Some(PlayerEvent::Failed("cannot play this file".to_string()))
         );
     }
 

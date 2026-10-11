@@ -5,11 +5,18 @@
 //! cargo run -p niveus-app --example screen -- <cover-url>
 //! cargo run -p niveus-app --example screen -- --cover-size large
 //! cargo run -p niveus-app --example screen -- --metadata
-//! cargo run -p niveus-app --example screen -- --cover-size large --metadata
+//! cargo run -p niveus-app --example screen -- --size 110x34
+//! cargo run -p niveus-app --example screen -- --keys tab,down,tab,3,u,2
 //! ```
 //!
 //! `--cover-size` and `--metadata` combine, which is how the six arrangements
 //! of the panel — three cover sizes, block on or off — can be looked at.
+//!
+//! `--size` picks the terminal, so the three responsive presets can each be
+//! drawn; `--keys` feeds a comma-separated list of key presses through the same
+//! event handling the real loop uses, printing a frame after each. That is how
+//! the navigation, the focus and the keys that were removed can be looked at
+//! without a signed-in account.
 //!
 //! This is the only place the two halves of a cover meet — the crate that draws
 //! one and the crate that draws the screen — so it is the only preview that can
@@ -18,6 +25,7 @@
 //!
 //! Colours are not shown; this is for judging the arrangement.
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use niveus_app::event::AppEvent;
 use niveus_app::paths::Paths;
 use niveus_app::state::AppState;
@@ -30,6 +38,7 @@ use niveus_music_core::{
 use niveus_ncm_provider::NcmProvider;
 use niveus_ui::{render, LayoutTier, Theme};
 use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 use std::sync::Arc;
@@ -40,6 +49,8 @@ async fn main() {
     let mut url: Option<String> = None;
     let mut cover_size = CoverSize::Normal;
     let mut metadata = false;
+    let mut size = (140u16, 40u16);
+    let mut keys: Vec<KeyEvent> = Vec::new();
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
@@ -49,15 +60,25 @@ async fn main() {
                     .into_iter()
                     .find(|size| size.name() == wanted)
                     .unwrap_or_else(|| {
-                        panic!("封面尺寸应为 small / normal / large，收到 {wanted}")
+                        panic!("cover size must be small / normal / large, got {wanted}")
                     });
             }
             "--metadata" => metadata = true,
+            "--size" => size = parse_size(&arguments.next().unwrap_or_default()),
+            "--keys" => {
+                keys = arguments
+                    .next()
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter(|name| !name.is_empty())
+                    .map(parse_key)
+                    .collect();
+            }
             other => url = Some(other.to_string()),
         }
     }
 
-    let area = Rect::new(0, 0, 140, 40);
+    let area = Rect::new(0, 0, size.0, size.1);
 
     let paths = Paths::discover().expect("a home directory");
     let config = Config {
@@ -72,14 +93,16 @@ async fn main() {
         id: niveus_music_core::UserId(960),
         name: "listener".into(),
     });
-    state.page = niveus_ui::Page::Playlist;
     state.opened_playlist = Some(Playlist {
         id: PlaylistId(1),
         name: "我喜欢的摇滚".into(),
         kind: PlaylistKind::Created,
     });
-    state.songs = songs();
-    state.queue.replace_items(state.songs.clone());
+    let tracks = songs();
+    state.songs = tracks.clone();
+    state.queue.replace_items(tracks.clone());
+    // One track waiting behind the rest, so UP NEXT has something to show.
+    state.queue.push_next(tracks[3].clone());
     state.queue.playback_mode = PlaybackMode::ListLoop;
     state.queue.select(0);
     state.current_song = Some(state.songs[0].clone());
@@ -111,14 +134,57 @@ async fn main() {
         )
         .await;
 
+    print_frame(&state, area, "start");
+    // Each key goes through the same path the real loop sends it down, so the
+    // frame after it is the frame the program would draw.
+    for key in keys {
+        state.handle_event(AppEvent::Key(key), &tx).await;
+        print_frame(&state, area, &format!("after {key:?}"));
+    }
+}
+
+/// `140x40`, as `--size` takes it.
+fn parse_size(raw: &str) -> (u16, u16) {
+    let (w, h) = raw.split_once('x').unwrap_or_else(|| {
+        panic!("--size wants WIDTHxHEIGHT, got {raw}");
+    });
+    (
+        w.parse().expect("a numeric width"),
+        h.parse().expect("a numeric height"),
+    )
+}
+
+/// A key by name, for `--keys`.
+fn parse_key(name: &str) -> KeyEvent {
+    let code = match name {
+        "tab" => KeyCode::Tab,
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
+        "enter" => KeyCode::Enter,
+        "esc" => KeyCode::Esc,
+        "space" => KeyCode::Char(' '),
+        other => {
+            let mut chars = other.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) => KeyCode::Char(c),
+                _ => panic!("unknown key {other}"),
+            }
+        }
+    };
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+fn print_frame(state: &AppState, area: Rect, label: &str) {
     let ui = state.ui_state();
     let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
     terminal
         .draw(|frame| render(frame, &ui, &Theme::default()))
         .unwrap();
 
-    let buffer = terminal.backend().buffer();
-    println!("┄┄ {}×{} ┄┄", area.width, area.height);
+    let buffer: &Buffer = terminal.backend().buffer();
+    println!("┄┄ {label} · {}×{} ┄┄", area.width, area.height);
     for y in 0..area.height {
         println!("{}", row_text(buffer, area.width, y));
     }

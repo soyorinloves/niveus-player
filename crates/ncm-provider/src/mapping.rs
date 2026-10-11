@@ -114,7 +114,7 @@ pub fn map_audio_source(dto: SongUrlDto) -> Result<AudioSource> {
     let url = dto
         .url
         .filter(|u| !u.trim().is_empty())
-        .ok_or_else(|| ProviderError::MissingResource("音源不可用".to_string()))?;
+        .ok_or_else(|| ProviderError::MissingResource("no audio source available".to_string()))?;
 
     Ok(AudioSource {
         url,

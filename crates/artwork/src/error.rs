@@ -2,14 +2,14 @@
 
 #[derive(Debug, thiserror::Error)]
 pub enum ArtworkError {
-    #[error("无法下载封面：{0}")]
+    #[error("cannot download the cover: {0}")]
     Download(#[from] reqwest::Error),
-    #[error("封面地址为空")]
+    #[error("the cover URL is empty")]
     EmptyUrl,
-    #[error("封面地址返回了 HTTP {0}")]
+    #[error("the cover URL returned HTTP {0}")]
     Status(u16),
-    #[error("封面过大，已放弃（{0} 字节）")]
+    #[error("the cover is too large; giving up ({0} bytes)")]
     TooLarge(usize),
-    #[error("无法解析封面图片：{0}")]
+    #[error("cannot decode the cover image: {0}")]
     Decode(#[from] image::ImageError),
 }

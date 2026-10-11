@@ -15,18 +15,10 @@ pub enum PlaylistKind {
 }
 
 impl PlaylistKind {
-    /// Section heading used by the playlist browse view.
-    pub fn heading(self) -> &'static str {
-        match self {
-            PlaylistKind::Created => "CREATED",
-            PlaylistKind::Collected => "COLLECTED",
-            PlaylistKind::Liked => "FAVORITES",
-        }
-    }
-
     /// Whether playlists of this kind appear in the browsable grouped list.
     ///
-    /// `Liked` is reachable through its own top-level page instead.
+    /// `Liked` is reachable through its own secondary item instead, so it is
+    /// never a group of the playlist list.
     pub fn is_grouped(self) -> bool {
         matches!(self, PlaylistKind::Created | PlaylistKind::Collected)
     }

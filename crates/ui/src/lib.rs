@@ -5,16 +5,17 @@
 //! knows nothing about the music service, the player, or lyrics.
 //!
 //! ```
-//! use niveus_ui::{layout, state::Page};
+//! use niveus_ui::{layout, state::Primary};
 //!
-//! assert_eq!(layout::LayoutTier::for_size(120, 40).name(), "Standard");
-//! assert_eq!(Page::Playlist.title(), "PLAYLIST");
+//! assert_eq!(layout::LayoutTier::for_size(140, 40).name(), "Standard");
+//! assert_eq!(Primary::Library.title(), "LIBRARY");
 //! ```
 
 pub mod layout;
 pub mod qr;
 pub mod render;
 pub mod state;
+pub mod strings;
 pub mod theme;
 
 pub use input::{map_key, to_key};
@@ -22,8 +23,9 @@ pub use layout::{artwork_rows, compute, pane_rows, panel_blocks, LayoutTier, Reg
 pub use qr::{QrError, QrGrid};
 pub use render::render;
 pub use state::{
-    ArtworkCell, ArtworkInk, ArtworkView, ListView, LoginView, LyricWindow, LyricsView,
-    NowPlayingView, Page, SessionView, Setting, SettingsValues, StatusView, UiState, SETTINGS_ROWS,
+    ArtworkCell, ArtworkInk, ArtworkView, Focus, ListView, LoginView, LyricWindow, LyricsView,
+    NowPlayingView, Primary, Section, SessionView, Setting, SettingGroup, SettingsValues,
+    StatusView, UiState,
 };
 pub use theme::Theme;
 
